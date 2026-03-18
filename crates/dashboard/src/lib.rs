@@ -10,7 +10,8 @@ use axum::routing::{delete, get};
 use axum::Router;
 use envelope_email_store::Database;
 use tokio::sync::Mutex;
-use tower_http::cors::CorsLayer;
+use axum::http::{HeaderValue, Method};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::info;
 
 type AppState = Arc<Mutex<Database>>;
@@ -25,7 +26,19 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/accounts", get(list_accounts))
         .route("/api/accounts/{id}", delete(delete_account))
         .route("/api/stats", get(stats))
-        .layer(CorsLayer::permissive())
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
+                    let s = origin.to_str().unwrap_or("");
+                    s.starts_with("http://localhost:") || s.starts_with("http://127.0.0.1:")
+                }))
+                .allow_methods([Method::GET, Method::POST, Method::DELETE])
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::header::ACCEPT,
+                ]),
+        )
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))

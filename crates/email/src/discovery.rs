@@ -47,8 +47,10 @@ pub async fn discover(domain: &str) -> Result<DiscoveryResult, DiscoveryError> {
         Err(e) => debug!("SRV discovery failed for {domain}: {e}"),
     }
 
-    // Strategy 1: Autoconfig (not yet implemented)
-    debug!("autoconfig XML parsing not yet implemented for {domain}");
+    // Strategy 1: Autoconfig XML (deferred — requires HTTP client dependency)
+    // Mozilla autoconfig: https://autoconfig.{domain}/mail/config-v1.1.xml
+    // SRV + MX + common patterns cover the major providers without an HTTP dep.
+    debug!("autoconfig skipped for {domain} (SRV/MX/common patterns used instead)");
 
     // Strategy 2: MX-derived
     match discover_mx(domain).await {

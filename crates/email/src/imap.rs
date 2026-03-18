@@ -15,6 +15,14 @@ use tracing::{debug, info};
 
 use crate::errors::ImapError;
 
+/// Reject strings containing characters that could be used for IMAP command injection.
+fn validate_imap_input(s: &str) -> Result<(), ImapError> {
+    if s.contains('\r') || s.contains('\n') || s.contains('\0') || s.contains('{') || s.contains('}') {
+        return Err(ImapError::Protocol("invalid characters in input".to_string()));
+    }
+    Ok(())
+}
+
 type ImapSession = Session<TlsStream<TcpStream>>;
 
 /// IMAP client wrapping an authenticated async-imap session.
@@ -95,6 +103,8 @@ pub async fn fetch_inbox(
     folder: &str,
     limit: u32,
 ) -> Result<Vec<MessageSummary>, ImapError> {
+    validate_imap_input(folder)?;
+
     let mailbox = client
         .session
         .select(folder)
@@ -173,6 +183,8 @@ pub async fn fetch_message(
     folder: &str,
     uid: u32,
 ) -> Result<Option<Message>, ImapError> {
+    validate_imap_input(folder)?;
+
     client
         .session
         .select(folder)
@@ -283,6 +295,9 @@ pub async fn search(
     query: &str,
     limit: u32,
 ) -> Result<Vec<MessageSummary>, ImapError> {
+    validate_imap_input(folder)?;
+    validate_imap_input(query)?;
+
     client
         .session
         .select(folder)
@@ -374,6 +389,9 @@ pub async fn move_message(
     from: &str,
     to: &str,
 ) -> Result<(), ImapError> {
+    validate_imap_input(from)?;
+    validate_imap_input(to)?;
+
     client
         .session
         .select(from)
@@ -422,6 +440,9 @@ pub async fn copy_message(
     from: &str,
     to: &str,
 ) -> Result<(), ImapError> {
+    validate_imap_input(from)?;
+    validate_imap_input(to)?;
+
     client
         .session
         .select(from)
@@ -444,6 +465,8 @@ pub async fn delete_message(
     folder: &str,
     uid: u32,
 ) -> Result<(), ImapError> {
+    validate_imap_input(folder)?;
+
     client
         .session
         .select(folder)
@@ -484,6 +507,8 @@ pub async fn set_flag(
     uid: u32,
     flag: &str,
 ) -> Result<(), ImapError> {
+    validate_imap_input(folder)?;
+
     client
         .session
         .select(folder)
@@ -491,6 +516,7 @@ pub async fn set_flag(
         .map_err(|e| ImapError::Protocol(format!("SELECT {folder}: {e}")))?;
 
     let imap_flag = map_flag_name(flag);
+    validate_imap_input(&imap_flag)?;
     let store_query = format!("+FLAGS ({imap_flag})");
 
     let store_stream = client
@@ -513,6 +539,8 @@ pub async fn remove_flag(
     uid: u32,
     flag: &str,
 ) -> Result<(), ImapError> {
+    validate_imap_input(folder)?;
+
     client
         .session
         .select(folder)
@@ -520,6 +548,7 @@ pub async fn remove_flag(
         .map_err(|e| ImapError::Protocol(format!("SELECT {folder}: {e}")))?;
 
     let imap_flag = map_flag_name(flag);
+    validate_imap_input(&imap_flag)?;
     let store_query = format!("-FLAGS ({imap_flag})");
 
     let store_stream = client
@@ -533,6 +562,61 @@ pub async fn remove_flag(
 
     debug!("removed flag {imap_flag} from UID {uid} in {folder}");
     Ok(())
+}
+
+/// Fetch a specific attachment by filename from a message, returning (filename, raw bytes).
+pub async fn download_attachment(
+    client: &mut ImapClient,
+    uid: u32,
+    filename: &str,
+    folder: &str,
+) -> Result<(String, Vec<u8>), ImapError> {
+    validate_imap_input(folder)?;
+
+    client
+        .session
+        .select(folder)
+        .await
+        .map_err(|e| ImapError::Protocol(format!("SELECT {folder}: {e}")))?;
+
+    let uid_range = format!("{uid}");
+    let messages = client
+        .session
+        .uid_fetch(&uid_range, "(UID BODY.PEEK[])")
+        .await
+        .map_err(|e| ImapError::Protocol(format!("UID FETCH {uid}: {e}")))?;
+
+    let mut stream = messages;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(fetch) => {
+                let body: &[u8] = fetch.body().unwrap_or_default();
+                let parsed = mail_parser::MessageParser::default().parse(body);
+
+                if let Some(parsed) = parsed {
+                    for attachment in parsed.attachments() {
+                        let att_name = attachment
+                            .attachment_name()
+                            .unwrap_or("unnamed")
+                            .to_string();
+                        if att_name == filename {
+                            return Ok((att_name, attachment.contents().to_vec()));
+                        }
+                    }
+                    return Err(ImapError::Protocol(format!(
+                        "attachment '{filename}' not found in UID {uid}"
+                    )));
+                } else {
+                    return Err(ImapError::Protocol(format!(
+                        "failed to parse message UID {uid}"
+                    )));
+                }
+            }
+            Err(e) => return Err(ImapError::Protocol(format!("UID FETCH parse error: {e}"))),
+        }
+    }
+
+    Err(ImapError::NotFound(uid))
 }
 
 /// Extract first email address from a mail-parser Address.

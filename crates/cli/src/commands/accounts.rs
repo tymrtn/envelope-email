@@ -23,7 +23,8 @@ pub fn run(cmd: AccountsCmd, json: bool) -> Result<()> {
     }
 }
 
-fn add(
+#[tokio::main]
+async fn add(
     email: &str,
     password: Option<String>,
     name: Option<String>,
@@ -40,26 +41,38 @@ fn add(
 
     let display_name = name.unwrap_or_else(|| email.to_string());
 
-    // Attempt auto-discovery if hosts not provided.
-    // TODO: call envelope_email_transport::discovery::discover() when transport crate compiles.
-    // For now, require manual input if not provided.
     let (smtp_host, smtp_port, imap_host, imap_port) = match (smtp_host, imap_host) {
         (Some(sh), Some(ih)) => (sh, smtp_port.unwrap_or(587), ih, imap_port.unwrap_or(993)),
         _ => {
-            // Try auto-discovery from the domain
             let domain = email
                 .split('@')
                 .nth(1)
                 .context("invalid email address — missing @")?;
 
-            eprintln!("Auto-discovery not yet available. Using common defaults for {domain}.");
-            let sh = format!("smtp.{domain}");
-            let ih = format!("imap.{domain}");
-            eprintln!("  SMTP: {sh}:{}", smtp_port.unwrap_or(587));
-            eprintln!("  IMAP: {ih}:{}", imap_port.unwrap_or(993));
-            eprintln!("  Override with --smtp-host / --imap-host if incorrect.");
-
-            (sh, smtp_port.unwrap_or(587), ih, imap_port.unwrap_or(993))
+            eprintln!("Discovering mail servers for {domain}...");
+            match envelope_email_transport::discover(domain).await {
+                Ok(result) => {
+                    let sp = smtp_port.unwrap_or(result.smtp_port);
+                    let ip = imap_port.unwrap_or(result.imap_port);
+                    eprintln!(
+                        "Discovered SMTP: {}:{} (via {}), IMAP: {}:{} (via {})",
+                        result.smtp_host, sp, result.smtp_source,
+                        result.imap_host, ip, result.imap_source,
+                    );
+                    (result.smtp_host, sp, result.imap_host, ip)
+                }
+                Err(e) => {
+                    eprintln!("Auto-discovery failed ({e}), falling back to defaults for {domain}.");
+                    let sh = format!("smtp.{domain}");
+                    let ih = format!("imap.{domain}");
+                    let sp = smtp_port.unwrap_or(587);
+                    let ip = imap_port.unwrap_or(993);
+                    eprintln!("  SMTP: {sh}:{sp}");
+                    eprintln!("  IMAP: {ih}:{ip}");
+                    eprintln!("  Override with --smtp-host / --imap-host if incorrect.");
+                    (sh, sp, ih, ip)
+                }
+            }
         }
     };
 

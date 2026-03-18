@@ -20,7 +20,19 @@ impl Database {
                 StoreError::Config(format!("cannot create config dir: {e}"))
             })?;
         }
-        Self::open(&path)
+        let db = Self::open(&path)?;
+
+        // Restrict database file to owner-only access
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&path, perms).map_err(|e| {
+                StoreError::Config(format!("cannot set database permissions: {e}"))
+            })?;
+        }
+
+        Ok(db)
     }
 
     /// Open or create the database at a specific path.

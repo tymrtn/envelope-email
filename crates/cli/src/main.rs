@@ -426,10 +426,27 @@ fn main() {
         Commands::Folders { account } => {
             commands::folders::run(account.as_deref(), cli.json)
         }
-        Commands::Attachment { .. } => {
-            eprintln!("Not yet implemented: attachment (transport layer pending)");
-            std::process::exit(1);
-        }
+        Commands::Attachment { subcommand } => match subcommand {
+            AttachmentCmd::List {
+                uid,
+                folder,
+                account,
+            } => commands::attachments::run_list(uid, &folder, account.as_deref(), cli.json),
+            AttachmentCmd::Download {
+                uid,
+                filename,
+                output,
+                folder,
+                account,
+            } => commands::attachments::run_download(
+                uid,
+                &filename,
+                output.as_deref(),
+                &folder,
+                account.as_deref(),
+                cli.json,
+            ),
+        },
         Commands::Draft { subcommand } => match subcommand {
             DraftCmd::List { account } => {
                 commands::drafts::run_list(account.as_deref(), cli.json)
