@@ -130,6 +130,16 @@ pub struct ActionLog {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredLicense {
+    pub id: String,
+    pub token: String,
+    pub licensee: String,
+    pub expires_at: String,
+    pub features: Vec<String>,
+    pub activated_at: String,
+}
+
 /// Summary of an IMAP message (envelope data, no body).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageSummary {

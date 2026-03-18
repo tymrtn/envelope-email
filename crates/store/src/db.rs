@@ -109,6 +109,15 @@ impl Database {
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS license_keys (
+                id TEXT PRIMARY KEY,
+                token TEXT NOT NULL,
+                licensee TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                features TEXT NOT NULL DEFAULT '[]',
+                activated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE INDEX IF NOT EXISTS idx_drafts_account_status
                 ON drafts(account_id, status);
             CREATE INDEX IF NOT EXISTS idx_drafts_send_after
