@@ -39,7 +39,7 @@ mail-parser = "0.9"
 mail-builder = "0.3"
 
 # Crypto & credentials
-keyring = "3"
+keyring = { version = "3", features = ["apple-native"] }
 aes-gcm = "0.10"
 argon2 = "0.5"
 rand = "0.8"
@@ -54,7 +54,7 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["fs", "cors"] }
 
 # TLS
-rustls = "0.23"
+rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 webpki-roots = "0.26"
 futures-util = "0.3"
