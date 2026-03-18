@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Tyler Martin
+# Licensed under FSL-1.1-ALv2 (see LICENSE)
+
+[package]
+name = "envelope-email-transport"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "IMAP/SMTP transport, auto-discovery, and MIME building for Envelope Email"
+
+[dependencies]
+envelope-email-store = { path = "../store" }
+
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+# IMAP/SMTP
+async-imap.workspace = true
+imap-proto.workspace = true
+lettre.workspace = true
+mail-parser.workspace = true
+mail-builder.workspace = true
+
+# DNS discovery
+hickory-resolver.workspace = true
+
+# TLS
+rustls.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
+futures-util.workspace = true

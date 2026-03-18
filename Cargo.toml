@@ -1,0 +1,67 @@
+# Copyright (c) 2026 Tyler Martin
+# Licensed under FSL-1.1-ALv2 (see LICENSE)
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/cli",
+    "crates/email",
+    "crates/store",
+    "crates/dashboard",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+authors = ["Tyler Martin"]
+repository = "https://github.com/tymrtn/envelope-email"
+description = "BYO mailbox email client with agent-native primitives"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Email transport
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
+imap-proto = "0.16"
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+mail-parser = "0.9"
+mail-builder = "0.3"
+
+# Crypto & credentials
+keyring = "3"
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+base64 = "0.22"
+dirs-next = "2"
+
+# DNS & discovery
+hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
+
+# Dashboard
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+
+# TLS
+rustls = "0.23"
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+futures-util = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = "symbols"
+debug = false
+codegen-units = 1

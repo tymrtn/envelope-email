@@ -1,0 +1,29 @@
+# Copyright (c) 2026 Tyler Martin
+# Licensed under FSL-1.1-ALv2 (see LICENSE)
+
+[package]
+name = "envelope-email-store"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "SQLite persistence, credential encryption, and config store for Envelope Email"
+
+[dependencies]
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+# Crypto
+aes-gcm.workspace = true
+argon2.workspace = true
+rand.workspace = true
+base64.workspace = true
+
+# OS keychain
+keyring.workspace = true
+dirs-next.workspace = true

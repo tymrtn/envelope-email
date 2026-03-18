@@ -1,0 +1,26 @@
+# Copyright (c) 2026 Tyler Martin
+# Licensed under FSL-1.1-ALv2 (see LICENSE)
+
+[package]
+name = "envelope-email"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "BYO mailbox email client with agent-native primitives"
+
+[[bin]]
+name = "envelope-email"
+path = "src/main.rs"
+
+[dependencies]
+envelope-email-store = { path = "../store" }
+envelope-email-transport = { path = "../email" }
+
+clap.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
