@@ -3,6 +3,7 @@
 
 pub mod accounts;
 pub mod action_log;
+pub mod credential_store;
 pub mod crypto;
 pub mod db;
 pub mod drafts;
@@ -10,6 +11,7 @@ pub mod errors;
 pub mod license_store;
 pub mod models;
 
+pub use credential_store::CredentialBackend;
 pub use db::Database;
 pub use errors::StoreError;
 pub use models::*;

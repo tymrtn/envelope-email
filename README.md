@@ -8,7 +8,7 @@ BYO mailbox email client with agent-native primitives. Turn any IMAP/SMTP accoun
 # Homebrew (macOS/Linux)
 brew install tymrtn/tap/envelope-email
 
-# Cargo (free tier — no scoring)
+# Cargo
 cargo install envelope-email
 
 # From source
@@ -67,20 +67,30 @@ envelope-email send --to <addr> --subject <sub> --body <body> [--cc <addr>] [--b
 envelope-email move <uid> --to-folder Archive [--folder INBOX]
 envelope-email copy <uid> --to-folder Important [--folder INBOX]
 envelope-email delete <uid> [--folder INBOX]
-envelope-email flag add <uid> --flag seen
-envelope-email flag remove <uid> --flag flagged
+envelope-email flag add <uid> <flag> [--folder INBOX] [--account <id>]
+envelope-email flag remove <uid> <flag> [--folder INBOX] [--account <id>]
 ```
 
 ### Attachments
 
 ```bash
-envelope-email attachment download <uid> [--dir ~/Downloads]
+envelope-email attachment list <uid> [--folder INBOX] [--account <id>] [--json]
+envelope-email attachment download <uid> <filename> [--output ~/file.pdf] [--folder INBOX] [--account <id>]
+```
+
+### Drafts
+
+```bash
+envelope-email draft create --to <addr> [--subject <sub>] [--body <body>] [--account <id>] [--json]
+envelope-email draft list [--account <id>] [--json]
+envelope-email draft send <draft-id> [--account <id>] [--json]
+envelope-email draft discard <draft-id> [--json]
 ```
 
 ### Dashboard
 
 ```bash
-envelope-email serve [--port 8080]
+envelope-email serve [--port 3141]
 ```
 
 ## JSON Output

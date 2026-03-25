@@ -1,178 +1,250 @@
+---
+name: envelope-email
+description: "BYO-mailbox CLI email client for IMAP/SMTP. Use `envelope-email` to read, send, search, organize, and draft emails from any standard mailbox. Supports multiple accounts with auto-discovery, JSON output on every command, and a localhost dashboard. Replaces Himalaya for OpenClaw agents."
+homepage: https://github.com/tymrtn/envelope-email
+metadata:
+  {
+    "openclaw":
+      {
+        "emoji": "📨",
+        "requires": { "bins": ["envelope-email"] },
+        "install":
+          [
+            {
+              "id": "brew",
+              "kind": "brew",
+              "formula": "tymrtn/tap/envelope-email",
+              "bins": ["envelope-email"],
+              "label": "Install Envelope Email (brew)",
+            },
+            {
+              "id": "cargo",
+              "kind": "shell",
+              "command": "cargo install envelope-email",
+              "bins": ["envelope-email"],
+              "label": "Install Envelope Email (cargo)",
+            },
+          ],
+      },
+  }
+---
+
 # Envelope Email CLI
 
-BYO mailbox email client with agent-native primitives. Replaces Himalaya for OpenClaw agents.
+BYO-mailbox email client with agent-native primitives. Turn any IMAP/SMTP account into a programmable email interface with JSON output on every command.
 
-## Account Management
+## When to Use
+
+✅ **USE this skill when:**
+
+- Reading, sending, or searching email
+- Managing multiple email accounts
+- Organizing messages (move, copy, delete, flag)
+- Creating and managing drafts for human review
+- Downloading attachments
+- Checking inbox status during heartbeats
+
+## When NOT to Use
+
+❌ **DON'T use this skill when:**
+
+- User asks to send a WhatsApp message → use `wacli` skill
+- User needs calendar/scheduling → use a calendar tool
+- Task requires rendering HTML email in a browser → open the dashboard with `serve`
+
+## Account Setup
 
 ```bash
-# Add account (auto-discovers SMTP/IMAP)
-envelope-email accounts add --email <email> --password <app-password>
+# Add account (auto-discovers IMAP/SMTP hosts via DNS)
+envelope-email accounts add --email you@gmail.com --password <app-password>
 
-# List accounts
-envelope-email accounts list [--json]
+# Add with explicit server settings (if auto-discovery fails)
+envelope-email accounts add --email you@custom.com --password <pass> \
+  --imap-host imap.custom.com --imap-port 993 \
+  --smtp-host smtp.custom.com --smtp-port 587
 
-# Remove account
+# List configured accounts
+envelope-email accounts list --json
+
+# Remove an account
 envelope-email accounts remove <id-or-email>
 ```
 
+**Note:** Passwords are stored in the OS keychain (macOS Keychain, etc.), not in plaintext. For Gmail, use an App Password — not your main password.
+
 ## Reading Email
 
+### List Inbox
+
 ```bash
-# List inbox (most recent first)
-envelope-email inbox [--folder INBOX] [--limit 50] [--account <id>] [--json]
+# Default inbox (25 most recent)
+envelope-email inbox --json
 
-# Read a specific message by UID
-envelope-email read <uid> [--folder INBOX] [--account <id>] [--json]
+# Specific folder and limit
+envelope-email inbox --folder "Sent" --limit 50 --json
 
-# Search messages (IMAP search syntax)
-envelope-email search "<query>" [--folder INBOX] [--limit 10] [--account <id>] [--json]
+# Specific account
+envelope-email inbox --account work@example.com --json
+```
 
-# List folders
-envelope-email folders [--account <id>] [--json]
+### Read a Message
+
+```bash
+# Read by UID
+envelope-email read 42 --json
+
+# From a specific folder
+envelope-email read 42 --folder "Archive" --json
+```
+
+### Search Messages
+
+Uses IMAP search syntax:
+
+```bash
+# Search by sender
+envelope-email search "FROM john@example.com" --json
+
+# Search by subject
+envelope-email search "SUBJECT invoice" --json
+
+# Combine criteria
+envelope-email search "FROM john@co.com SINCE 01-Mar-2026" --limit 10 --json
+
+# Search in a specific folder
+envelope-email search "UNSEEN" --folder "INBOX" --json
+```
+
+### List Folders
+
+```bash
+envelope-email folders --json
+envelope-email folders --account work@example.com --json
 ```
 
 ## Sending Email
 
 ```bash
-# Direct send (no scoring — free tier)
-envelope-email send --to <addr> --subject <sub> --body <body> \
-  [--html <html>] [--cc <addr>] [--bcc <addr>] [--reply-to <addr>] [--account <id>] [--json]
-```
+# Simple send
+envelope-email send --to someone@example.com --subject "Hello" --body "Hi there"
 
-## Compose with Attribution Scoring (licensed tier)
+# With CC, BCC, and reply-to
+envelope-email send --to someone@example.com --subject "Meeting" \
+  --body "See you at 3pm" --cc boss@example.com --bcc archive@example.com \
+  --reply-to noreply@example.com
 
-```bash
-# Compose with blind attribution scoring
-envelope-email compose --to <addr> --subject <sub> --body <body> \
-  --attr <attribute> [--attr <attribute> ...] \
-  [--html <html>] [--cc <addr>] [--bcc <addr>] [--account <id>] [--json]
+# HTML body
+envelope-email send --to someone@example.com --subject "Update" \
+  --html "<h1>Status Report</h1><p>All good.</p>"
 
-# Reply with scoring (fetches original, adds In-Reply-To)
-envelope-email reply <uid> --body <body> [--attr <attribute> ...] \
-  [--folder INBOX] [--account <id>] [--json]
-
-# Forward with scoring
-envelope-email forward <uid> --to <addr> --body <body> [--attr <attribute> ...] \
-  [--folder INBOX] [--account <id>] [--json]
-```
-
-Scoring routes messages to one of four zones:
-- **sent** — auto-sent immediately via SMTP
-- **delayed** — queued for 5-minute delay, then sent
-- **pending_review** — saved to Drafts for human approval
-- **blocked** — saved to Drafts, not sendable without review
-
-## Message Management
-
-```bash
-# Move message to folder
-envelope-email move <uid> --to-folder <folder> [--folder INBOX] [--account <id>]
-
-# Copy message to folder
-envelope-email copy <uid> --to-folder <folder> [--folder INBOX] [--account <id>]
-
-# Delete message
-envelope-email delete <uid> [--folder INBOX] [--account <id>]
-
-# Add/remove flags
-envelope-email flag add <uid> <flag> [--folder INBOX] [--account <id>]
-envelope-email flag remove <uid> <flag> [--folder INBOX] [--account <id>]
-# Flags: seen, flagged, answered, draft, deleted
+# From a specific account
+envelope-email send --to someone@example.com --subject "Hello" \
+  --body "Sent from work" --account work@example.com --json
 ```
 
 ## Draft Management
 
+Drafts are stored locally in SQLite. Create a draft, let the human review, then send or discard.
+
 ```bash
 # Create a draft
-envelope-email draft create --to <addr> [--subject <sub>] [--body <body>] [--account <id>] [--json]
+envelope-email draft create --to someone@example.com \
+  --subject "Proposal" --body "Draft body here" --json
 
-# List drafts
-envelope-email draft list [--account <id>] [--json]
+# List all drafts
+envelope-email draft list --json
 
-# Send a draft via SMTP
-envelope-email draft send <draft-id> [--account <id>] [--json]
+# Send a draft (delivers via SMTP)
+envelope-email draft send <draft-id> --json
 
 # Discard a draft
-envelope-email draft discard <draft-id> [--json]
+envelope-email draft discard <draft-id> --json
 ```
 
-## Attributes (licensed tier)
+**Agent pattern:** When composing email on behalf of a user, always create a draft first. Only call `draft send` after explicit human approval.
+
+## Message Management
+
+### Move / Copy / Delete
 
 ```bash
-# List available scoring attributes (keys + descriptions, no weights)
-envelope-email attributes [--json]
+# Move message to a folder
+envelope-email move 42 --to-folder "Archive" --folder INBOX
+
+# Copy message to a folder
+envelope-email copy 42 --to-folder "Important" --folder INBOX
+
+# Delete a message
+envelope-email delete 42 --folder INBOX
 ```
 
-## Action Log (licensed tier)
+### Flags
 
 ```bash
-# View recent governor decisions
-envelope-email actions tail [--limit 20] [--account <id>] [--json]
+# Mark as read
+envelope-email flag add 42 "\\Seen"
+
+# Star / flag a message
+envelope-email flag add 42 "\\Flagged"
+
+# Remove a flag
+envelope-email flag remove 42 "\\Seen"
+
+# With folder and account
+envelope-email flag add 42 "\\Answered" --folder "Sent" --account work@example.com
 ```
 
-## License Management
+Common IMAP flags: `\\Seen`, `\\Flagged`, `\\Answered`, `\\Draft`, `\\Deleted`
+
+## Attachments
 
 ```bash
-# Activate a license key
-envelope-email license activate <key>
+# List attachments on a message
+envelope-email attachment list 42 --json
 
-# Show license status
-envelope-email license status
+# Download a specific attachment
+envelope-email attachment download 42 "report.pdf" --output ~/Downloads/report.pdf
+
+# From a specific folder/account
+envelope-email attachment download 42 "photo.jpg" \
+  --folder "Sent" --account personal@gmail.com
 ```
 
 ## Dashboard
 
 ```bash
-# Start localhost account management UI
-envelope-email serve [--port 3141]
+# Start localhost web UI (default port 3141)
+envelope-email serve
+
+# Custom port
+envelope-email serve --port 8080
 ```
 
-## Output Format
-
-All commands support `--json` for structured output. Default is human-readable table format.
+Opens an account management dashboard at `http://localhost:3141`.
 
 ## Account Resolution
 
-If `--account` is not specified, the default (first added) account is used. Specify by ID or email address.
+- If `--account` is omitted, the first-added account is used as default.
+- Specify by numeric ID or email address: `--account 2` or `--account work@example.com`
+- Use `accounts list --json` to see all configured accounts with their IDs.
 
-## Attribute Reference
+## JSON Output
 
-| Key | Category | Description |
-|-----|----------|-------------|
-| reply_to_known | relationship | Replying to a known contact |
-| reply_in_thread | relationship | Continuing an existing thread |
-| known_contact | relationship | Recipient is in the contact book |
-| frequent_contact | relationship | Recipient exchanged 5+ messages in 30 days |
-| mutual_thread | relationship | Both parties have sent in this thread |
-| recent_inbound | relationship | Received a message from recipient within 7 days |
-| informational | intent | Message is purely informational |
-| scheduling | intent | Message involves scheduling or calendar |
-| acknowledgment | intent | Simple acknowledgment or confirmation |
-| request_action | intent | Requesting the recipient take an action |
-| commitment | intent | Making a promise or commitment |
-| delegation | intent | Delegating a task or responsibility |
-| escalation | intent | Escalating an issue or complaint |
-| low_stakes | stakes | Error would be trivial to correct |
-| medium_stakes | stakes | Error would require a follow-up to fix |
-| high_stakes | stakes | Error could damage a relationship or reputation |
-| financial | stakes | Message involves money, invoices, or payments |
-| legal | stakes | Message has legal implications |
-| irreversible | stakes | Action described cannot be undone |
-| short_body | content | Message body is under 100 words |
-| has_attachment | content | Message includes one or more attachments |
-| has_link | content | Message body contains URLs |
-| has_pii | content | Message contains personal identifiable info |
-| template_match | content | Body matches a known safe template |
-| agent_drafted | content | Message was drafted by an AI agent |
-| human_edited | content | Message was edited by the human after draft |
-| internal | domain | Recipient is on the same domain |
-| trusted_domain | domain | Recipient domain is on the trusted list |
-| unknown_domain | domain | Recipient domain has never been contacted |
-| freemail | domain | Recipient is on a freemail provider |
-| disposable_domain | domain | Recipient domain is a known disposable service |
-| gov_domain | domain | Recipient is a government domain |
-| single_recipient | recipient | Message has exactly one recipient |
-| small_group | recipient | Message has 2-5 recipients |
-| large_group | recipient | Message has 6+ recipients |
-| has_bcc | recipient | Message uses BCC |
-| first_contact | recipient | First message ever to this recipient |
+Every command supports the global `--json` flag for structured, machine-readable output:
+
+```bash
+# Pipe to jq for field extraction
+envelope-email inbox --json | jq '.[0].subject'
+
+# Check for unread count
+envelope-email search "UNSEEN" --json | jq 'length'
+```
+
+**Always use `--json` when calling from agents or scripts.** The default human-readable table format is for interactive terminal use only.
+
+## Tips
+
+- **IMAP search syntax** — Envelope passes search queries directly to the IMAP server. Common operators: `FROM`, `TO`, `SUBJECT`, `BODY`, `SINCE`, `BEFORE`, `UNSEEN`, `SEEN`, `FLAGGED`. Combine freely.
+- **App Passwords** — Gmail, Outlook, and other providers with 2FA require app-specific passwords, not your main login.
+- **UIDs are folder-scoped** — A message UID is only valid within its folder. Always use the same `--folder` when referencing a UID from a previous listing.
+- **Data storage** — Account metadata and drafts are stored in SQLite at `~/.config/envelope-email/`. Passwords go to the OS keychain.

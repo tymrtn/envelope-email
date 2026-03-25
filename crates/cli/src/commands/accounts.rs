@@ -3,11 +3,11 @@
 
 use crate::AccountsCmd;
 use anyhow::{bail, Context, Result};
-use envelope_email_store::crypto::get_or_create_passphrase;
+use envelope_email_store::credential_store::{self, CredentialBackend};
 use envelope_email_store::Database;
 use std::io::{self, Write};
 
-pub fn run(cmd: AccountsCmd, json: bool) -> Result<()> {
+pub fn run(cmd: AccountsCmd, json: bool, backend: CredentialBackend) -> Result<()> {
     match cmd {
         AccountsCmd::Add {
             email,
@@ -17,7 +17,7 @@ pub fn run(cmd: AccountsCmd, json: bool) -> Result<()> {
             imap_host,
             smtp_port,
             imap_port,
-        } => add(&email, password, name, smtp_host, smtp_port, imap_host, imap_port, json),
+        } => add(&email, password, name, smtp_host, smtp_port, imap_host, imap_port, json, backend),
         AccountsCmd::List => list(json),
         AccountsCmd::Remove { id } => remove(&id, json),
     }
@@ -33,6 +33,7 @@ async fn add(
     imap_host: Option<String>,
     imap_port: Option<u16>,
     json: bool,
+    backend: CredentialBackend,
 ) -> Result<()> {
     let password = match password {
         Some(pw) => pw,
@@ -76,8 +77,8 @@ async fn add(
         }
     };
 
-    let passphrase =
-        get_or_create_passphrase().context("failed to access keychain for credential encryption")?;
+    let passphrase = credential_store::get_or_create_passphrase(backend)
+        .context("failed to access credential store for encryption")?;
 
     let db = Database::open_default().context("failed to open database")?;
 

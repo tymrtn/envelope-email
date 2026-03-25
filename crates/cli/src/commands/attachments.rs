@@ -4,13 +4,20 @@
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
+use envelope_email_store::CredentialBackend;
 
 use super::common::setup_credentials;
 
 /// List attachments for a message by UID.
 #[tokio::main]
-pub async fn run_list(uid: u32, folder: &str, account: Option<&str>, json: bool) -> Result<()> {
-    let (_db, creds) = setup_credentials(account)?;
+pub async fn run_list(
+    uid: u32,
+    folder: &str,
+    account: Option<&str>,
+    json: bool,
+    backend: CredentialBackend,
+) -> Result<()> {
+    let (_db, creds) = setup_credentials(account, backend)?;
 
     let mut client = envelope_email_transport::imap::connect(&creds)
         .await
@@ -51,8 +58,9 @@ pub async fn run_download(
     folder: &str,
     account: Option<&str>,
     json: bool,
+    backend: CredentialBackend,
 ) -> Result<()> {
-    let (_db, creds) = setup_credentials(account)?;
+    let (_db, creds) = setup_credentials(account, backend)?;
 
     let mut client = envelope_email_transport::imap::connect(&creds)
         .await

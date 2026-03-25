@@ -46,6 +46,10 @@ rand = "0.8"
 base64 = "0.22"
 dirs-next = "2"
 
+# Machine identity (for file-based credential store)
+hostname = "0.4"
+whoami = "1"
+
 # DNS & discovery
 hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
 

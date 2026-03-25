@@ -2,13 +2,18 @@
 // Licensed under FSL-1.1-ALv2 (see LICENSE)
 
 use anyhow::{bail, Context, Result};
-use envelope_email_store::crypto::get_or_create_passphrase;
+use envelope_email_store::credential_store::{self, CredentialBackend};
 use envelope_email_store::Database;
 use envelope_email_transport::SmtpSender;
 
 use super::common::resolve_account;
 
-pub fn run_list(account: Option<&str>, json: bool) -> Result<()> {
+pub fn run_list(
+    account: Option<&str>,
+    json: bool,
+    backend: CredentialBackend,
+) -> Result<()> {
+    let _ = backend; // Not needed for list, but kept for API consistency
     let db = Database::open_default().context("failed to open database")?;
     let acct = resolve_account(&db, account)?;
 
@@ -58,7 +63,9 @@ pub fn run_create(
     body: Option<&str>,
     account: Option<&str>,
     json: bool,
+    backend: CredentialBackend,
 ) -> Result<()> {
+    let _ = backend; // Not needed for create, but kept for API consistency
     let db = Database::open_default().context("failed to open database")?;
     let acct = resolve_account(&db, account)?;
 
@@ -90,9 +97,15 @@ pub fn run_create(
 }
 
 #[tokio::main]
-pub async fn run_send(id: &str, account: Option<&str>, json: bool) -> Result<()> {
+pub async fn run_send(
+    id: &str,
+    account: Option<&str>,
+    json: bool,
+    backend: CredentialBackend,
+) -> Result<()> {
     let db = Database::open_default().context("failed to open database")?;
-    let passphrase = get_or_create_passphrase().context("keychain error")?;
+    let passphrase = credential_store::get_or_create_passphrase(backend)
+        .context("credential store error")?;
 
     let draft = db
         .get_draft(id)

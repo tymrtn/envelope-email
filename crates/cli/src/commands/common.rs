@@ -2,8 +2,8 @@
 // Licensed under FSL-1.1-ALv2 (see LICENSE)
 
 use anyhow::{bail, Context, Result};
+use envelope_email_store::credential_store::{self, CredentialBackend};
 use envelope_email_store::models::{Account, AccountWithCredentials};
-use envelope_email_store::crypto::get_or_create_passphrase;
 use envelope_email_store::Database;
 
 /// Resolve an account from an optional --account flag.
@@ -40,9 +40,13 @@ pub fn resolve_account(db: &Database, account_arg: Option<&str>) -> Result<Accou
 }
 
 /// Open the database, get the passphrase, resolve account, and return credentials.
-pub fn setup_credentials(account_arg: Option<&str>) -> Result<(Database, AccountWithCredentials)> {
+pub fn setup_credentials(
+    account_arg: Option<&str>,
+    backend: CredentialBackend,
+) -> Result<(Database, AccountWithCredentials)> {
     let db = Database::open_default().context("failed to open database")?;
-    let passphrase = get_or_create_passphrase().context("keychain error")?;
+    let passphrase = credential_store::get_or_create_passphrase(backend)
+        .context("credential store error")?;
     let acct = resolve_account(&db, account_arg)?;
     let creds = db
         .get_account_with_credentials(&acct.id, &passphrase)

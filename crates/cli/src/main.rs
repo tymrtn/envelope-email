@@ -14,6 +14,10 @@ struct Cli {
     /// Output as JSON
     #[arg(long, global = true)]
     json: bool,
+
+    /// Credential storage backend: "file" (default) or "keychain"
+    #[arg(long, global = true, default_value = "file")]
+    credential_store: String,
 }
 
 #[derive(Subcommand)]
@@ -354,24 +358,32 @@ enum ActionsCmd {
 fn main() {
     let cli = Cli::parse();
 
+    let backend: envelope_email_store::CredentialBackend = match cli.credential_store.parse() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let result = match cli.command {
-        Commands::Accounts { subcommand } => commands::accounts::run(subcommand, cli.json),
+        Commands::Accounts { subcommand } => commands::accounts::run(subcommand, cli.json, backend),
         Commands::Inbox {
             folder,
             limit,
             account,
-        } => commands::inbox::run(&folder, limit, account.as_deref(), cli.json),
+        } => commands::inbox::run(&folder, limit, account.as_deref(), cli.json, backend),
         Commands::Read {
             uid,
             folder,
             account,
-        } => commands::read::run(uid, &folder, account.as_deref(), cli.json),
+        } => commands::read::run(uid, &folder, account.as_deref(), cli.json, backend),
         Commands::Search {
             query,
             folder,
             limit,
             account,
-        } => commands::search::run(&query, &folder, limit, account.as_deref(), cli.json),
+        } => commands::search::run(&query, &folder, limit, account.as_deref(), cli.json, backend),
         Commands::Send {
             to,
             subject,
@@ -391,47 +403,48 @@ fn main() {
             reply_to.as_deref(),
             account.as_deref(),
             cli.json,
+            backend,
         ),
         Commands::Move {
             uid,
             to_folder,
             folder,
             account,
-        } => commands::messages::run_move(uid, &folder, &to_folder, account.as_deref(), cli.json),
+        } => commands::messages::run_move(uid, &folder, &to_folder, account.as_deref(), cli.json, backend),
         Commands::Copy {
             uid,
             to_folder,
             folder,
             account,
-        } => commands::messages::run_copy(uid, &folder, &to_folder, account.as_deref(), cli.json),
+        } => commands::messages::run_copy(uid, &folder, &to_folder, account.as_deref(), cli.json, backend),
         Commands::Delete {
             uid,
             folder,
             account,
-        } => commands::messages::run_delete(uid, &folder, account.as_deref(), cli.json),
+        } => commands::messages::run_delete(uid, &folder, account.as_deref(), cli.json, backend),
         Commands::Flag { subcommand } => match subcommand {
             FlagCmd::Add {
                 uid,
                 flag,
                 folder,
                 account,
-            } => commands::flags::run_add(uid, &flag, &folder, account.as_deref(), cli.json),
+            } => commands::flags::run_add(uid, &flag, &folder, account.as_deref(), cli.json, backend),
             FlagCmd::Remove {
                 uid,
                 flag,
                 folder,
                 account,
-            } => commands::flags::run_remove(uid, &flag, &folder, account.as_deref(), cli.json),
+            } => commands::flags::run_remove(uid, &flag, &folder, account.as_deref(), cli.json, backend),
         },
         Commands::Folders { account } => {
-            commands::folders::run(account.as_deref(), cli.json)
+            commands::folders::run(account.as_deref(), cli.json, backend)
         }
         Commands::Attachment { subcommand } => match subcommand {
             AttachmentCmd::List {
                 uid,
                 folder,
                 account,
-            } => commands::attachments::run_list(uid, &folder, account.as_deref(), cli.json),
+            } => commands::attachments::run_list(uid, &folder, account.as_deref(), cli.json, backend),
             AttachmentCmd::Download {
                 uid,
                 filename,
@@ -445,11 +458,12 @@ fn main() {
                 &folder,
                 account.as_deref(),
                 cli.json,
+                backend,
             ),
         },
         Commands::Draft { subcommand } => match subcommand {
             DraftCmd::List { account } => {
-                commands::drafts::run_list(account.as_deref(), cli.json)
+                commands::drafts::run_list(account.as_deref(), cli.json, backend)
             }
             DraftCmd::Create {
                 to,
@@ -462,9 +476,10 @@ fn main() {
                 body.as_deref(),
                 account.as_deref(),
                 cli.json,
+                backend,
             ),
             DraftCmd::Send { id, account } => {
-                commands::drafts::run_send(&id, account.as_deref(), cli.json)
+                commands::drafts::run_send(&id, account.as_deref(), cli.json, backend)
             }
             DraftCmd::Discard { id } => commands::drafts::run_discard(&id, cli.json),
         },

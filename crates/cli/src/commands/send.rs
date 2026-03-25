@@ -2,6 +2,7 @@
 // Licensed under FSL-1.1-ALv2 (see LICENSE)
 
 use anyhow::{Context, Result};
+use envelope_email_store::CredentialBackend;
 use envelope_email_transport::SmtpSender;
 
 use super::common::setup_credentials;
@@ -17,8 +18,9 @@ pub async fn run(
     reply_to: Option<&str>,
     account: Option<&str>,
     json: bool,
+    backend: CredentialBackend,
 ) -> Result<()> {
-    let (_db, creds) = setup_credentials(account)?;
+    let (_db, creds) = setup_credentials(account, backend)?;
 
     let message_id = SmtpSender::send(&creds, to, subject, body, html, cc, bcc, reply_to)
         .await

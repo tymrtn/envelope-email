@@ -2,6 +2,7 @@
 // Licensed under FSL-1.1-ALv2 (see LICENSE)
 
 use anyhow::{Context, Result};
+use envelope_email_store::CredentialBackend;
 
 use super::common::setup_credentials;
 
@@ -12,8 +13,9 @@ pub async fn run_move(
     to_folder: &str,
     account: Option<&str>,
     json: bool,
+    backend: CredentialBackend,
 ) -> Result<()> {
-    let (_db, creds) = setup_credentials(account)?;
+    let (_db, creds) = setup_credentials(account, backend)?;
 
     let mut client = envelope_email_transport::imap::connect(&creds)
         .await
@@ -45,8 +47,9 @@ pub async fn run_copy(
     to_folder: &str,
     account: Option<&str>,
     json: bool,
+    backend: CredentialBackend,
 ) -> Result<()> {
-    let (_db, creds) = setup_credentials(account)?;
+    let (_db, creds) = setup_credentials(account, backend)?;
 
     let mut client = envelope_email_transport::imap::connect(&creds)
         .await
@@ -77,8 +80,9 @@ pub async fn run_delete(
     folder: &str,
     account: Option<&str>,
     json: bool,
+    backend: CredentialBackend,
 ) -> Result<()> {
-    let (_db, creds) = setup_credentials(account)?;
+    let (_db, creds) = setup_credentials(account, backend)?;
 
     let mut client = envelope_email_transport::imap::connect(&creds)
         .await

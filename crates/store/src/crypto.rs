@@ -1,6 +1,12 @@
 // Copyright (c) 2026 Tyler Martin
 // Licensed under FSL-1.1-ALv2 (see LICENSE)
 
+//! Database-level encryption for account passwords.
+//!
+//! This module handles encrypting/decrypting individual values stored in SQLite.
+//! For the master passphrase management (file vs keychain backends), see
+//! `credential_store`.
+
 use crate::errors::{Result, StoreError};
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
@@ -75,23 +81,15 @@ pub fn decrypt(encoded: &str, passphrase: &str) -> Result<String> {
 }
 
 /// Get the encryption passphrase from the OS keychain, or generate and store one.
+///
+/// **Deprecated**: Use `credential_store::get_or_create_passphrase(backend)` instead.
+/// This function is kept for backward compatibility and delegates to the keychain
+/// backend if the `keychain` feature is enabled, or the file backend otherwise.
 pub fn get_or_create_passphrase() -> Result<String> {
-    let entry = keyring::Entry::new("envelope-email", "master-key")
-        .map_err(|e| StoreError::Keyring(e.to_string()))?;
-
-    match entry.get_password() {
-        Ok(pw) => Ok(pw),
-        Err(keyring::Error::NoEntry) => {
-            let mut bytes = [0u8; 32];
-            OsRng.fill_bytes(&mut bytes);
-            let passphrase = B64.encode(bytes);
-            entry
-                .set_password(&passphrase)
-                .map_err(|e| StoreError::Keyring(e.to_string()))?;
-            Ok(passphrase)
-        }
-        Err(e) => Err(StoreError::Keyring(e.to_string())),
-    }
+    // Default: try file backend (works everywhere)
+    crate::credential_store::get_or_create_passphrase(
+        crate::credential_store::CredentialBackend::File,
+    )
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@
 // Licensed under FSL-1.1-ALv2 (see LICENSE)
 
 use anyhow::{Context, Result};
+use envelope_email_store::CredentialBackend;
 
 use super::common::setup_credentials;
 
@@ -12,31 +13,33 @@ pub async fn run(
     limit: u32,
     account: Option<&str>,
     json: bool,
+    backend: CredentialBackend,
 ) -> Result<()> {
-    let (_db, creds) = setup_credentials(account)?;
+    let (_db, creds) = setup_credentials(account, backend)?;
 
     let mut client = envelope_email_transport::imap::connect(&creds)
         .await
         .context("IMAP connection failed")?;
 
-    let results =
+    let messages =
         envelope_email_transport::imap::search(&mut client, folder, query, limit).await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&results)?);
+        println!("{}", serde_json::to_string_pretty(&messages)?);
     } else {
-        if results.is_empty() {
-            println!("No results for \"{query}\" in {folder}");
+        if messages.is_empty() {
+            println!("No messages matching: {query}");
             return Ok(());
         }
 
         println!(
-            "{:<8}  {:<30}  {:<50}  {}",
-            "UID", "FROM", "SUBJECT", "DATE"
+            "{:<8}  {:<30}  {:<50}  {:<20}  {}",
+            "UID", "FROM", "SUBJECT", "DATE", "FLAGS"
         );
-        println!("{}", "-".repeat(110));
-        for msg in &results {
+        println!("{}", "-".repeat(120));
+        for msg in &messages {
             let date = msg.date.as_deref().unwrap_or("-");
+            let flags = msg.flags.join(", ");
             let subject = if msg.subject.len() > 48 {
                 format!("{}...", &msg.subject[..48])
             } else {
@@ -47,9 +50,12 @@ pub async fn run(
             } else {
                 msg.from_addr.clone()
             };
-            println!("{:<8}  {:<30}  {:<50}  {}", msg.uid, from, subject, date);
+            println!(
+                "{:<8}  {:<30}  {:<50}  {:<20}  {}",
+                msg.uid, from, subject, date, flags,
+            );
         }
-        println!("\n{} result(s)", results.len());
+        println!("\n{} result(s)", messages.len());
     }
 
     Ok(())
