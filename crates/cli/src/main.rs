@@ -356,6 +356,13 @@ enum ActionsCmd {
 }
 
 fn main() {
+    // Install the rustls crypto provider before any TLS connections are made.
+    // Without this, rustls panics with "Could not automatically determine
+    // the process-level CryptoProvider" when async-imap or lettre open TLS.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
     let cli = Cli::parse();
 
     let backend: envelope_email_store::CredentialBackend = match cli.credential_store.parse() {
