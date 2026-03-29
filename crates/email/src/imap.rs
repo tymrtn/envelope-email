@@ -275,6 +275,55 @@ pub async fn fetch_message(
     Ok(None)
 }
 
+/// Append a message to a folder with the given flags.
+///
+/// `flags` should be in IMAP format, e.g. `"(\\Draft \\Seen)"`.
+pub async fn append_message(
+    client: &mut ImapClient,
+    folder: &str,
+    flags: &str,
+    rfc822: &[u8],
+) -> Result<(), ImapError> {
+    validate_imap_input(folder)?;
+
+    client
+        .session
+        .append(folder, Some(flags), None, rfc822)
+        .await
+        .map_err(|e| ImapError::Protocol(format!("APPEND to {folder}: {e}")))?;
+
+    debug!("appended message to {folder} ({} bytes)", rfc822.len());
+    Ok(())
+}
+
+/// Find a message UID by its Message-ID header in a given folder.
+///
+/// Uses IMAP SEARCH HEADER to locate the message.
+pub async fn find_uid_by_message_id(
+    client: &mut ImapClient,
+    folder: &str,
+    message_id: &str,
+) -> Result<Option<u32>, ImapError> {
+    validate_imap_input(folder)?;
+    validate_imap_input(message_id)?;
+
+    client
+        .session
+        .select(folder)
+        .await
+        .map_err(|e| ImapError::Protocol(format!("SELECT {folder}: {e}")))?;
+
+    let search_query = format!("HEADER Message-ID {message_id}");
+    let uid_set = client
+        .session
+        .uid_search(&search_query)
+        .await
+        .map_err(|e| ImapError::Protocol(format!("UID SEARCH {search_query}: {e}")))?;
+
+    let uid = uid_set.into_iter().next();
+    Ok(uid)
+}
+
 /// Map human-readable flag names to IMAP flag format.
 fn map_flag_name(flag: &str) -> String {
     match flag.to_lowercase().as_str() {

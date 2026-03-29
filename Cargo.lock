@@ -663,6 +663,7 @@ dependencies = [
  "envelope-email-dashboard",
  "envelope-email-store",
  "envelope-email-transport",
+ "mail-builder",
  "rustls",
  "serde",
  "serde_json",

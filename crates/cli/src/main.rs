@@ -306,7 +306,7 @@ enum AttachmentCmd {
 
 #[derive(Subcommand)]
 enum DraftCmd {
-    /// Create a new draft
+    /// Create a new draft (IMAP-first: appends to server Drafts folder)
     Create {
         /// Recipient
         #[arg(long)]
@@ -320,25 +320,37 @@ enum DraftCmd {
         /// Account ID or email
         #[arg(long)]
         account: Option<String>,
+        /// CC recipient(s)
+        #[arg(long)]
+        cc: Option<String>,
+        /// BCC recipient(s)
+        #[arg(long)]
+        bcc: Option<String>,
+        /// In-Reply-To Message-ID (for replies)
+        #[arg(long)]
+        in_reply_to: Option<String>,
     },
-    /// List drafts
+    /// List drafts (IMAP-first: fetches from server Drafts folder)
     List {
         /// Account ID or email
         #[arg(long)]
         account: Option<String>,
     },
-    /// Send a draft
+    /// Send a draft by local ID or IMAP UID (fetches content from IMAP)
     Send {
-        /// Draft ID
+        /// Draft ID (local UUID) or IMAP UID (numeric)
         id: String,
         /// Account ID or email
         #[arg(long)]
         account: Option<String>,
     },
-    /// Discard a draft
+    /// Discard a draft by local ID or IMAP UID
     Discard {
-        /// Draft ID
+        /// Draft ID (local UUID) or IMAP UID (numeric)
         id: String,
+        /// Account ID or email
+        #[arg(long)]
+        account: Option<String>,
     },
 }
 
@@ -567,6 +579,9 @@ fn main() {
                 subject,
                 body,
                 account,
+                cc,
+                bcc,
+                in_reply_to,
             } => commands::drafts::run_create(
                 &to,
                 subject.as_deref(),
@@ -574,6 +589,9 @@ fn main() {
                 account.as_deref(),
                 cli.json,
                 backend,
+                cc.as_deref(),
+                bcc.as_deref(),
+                in_reply_to.as_deref(),
             ),
             DraftCmd::Send { id, account } => {
                 if governor::is_enabled(no_governor) {
@@ -591,7 +609,9 @@ fn main() {
                     commands::drafts::run_send(&id, account.as_deref(), cli.json, backend)
                 }
             }
-            DraftCmd::Discard { id } => commands::drafts::run_discard(&id, cli.json),
+            DraftCmd::Discard { id, account } => {
+                commands::drafts::run_discard(&id, cli.json, account.as_deref(), backend)
+            }
         },
 
         Commands::Serve { port } => commands::serve::run(port),

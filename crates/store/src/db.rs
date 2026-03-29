@@ -138,6 +138,73 @@ impl Database {
                 ON action_log(account_id, created_at);
             ",
         )?;
+
+        // Add imap_uid column for IMAP-first drafts (idempotent for existing DBs).
+        let has_imap_uid: bool = self.conn.prepare(
+            "SELECT COUNT(*) FROM pragma_table_info('drafts') WHERE name = 'imap_uid'"
+        )?.query_row([], |row| row.get::<_, i64>(0)).unwrap_or(0) > 0;
+        if !has_imap_uid {
+            self.conn.execute_batch(
+                "ALTER TABLE drafts ADD COLUMN imap_uid INTEGER;"
+            )?;
+        }
+
+        // Create detected_folders table for caching auto-detected folder names
+        // (drafts, sent, trash, etc.) per account.
+        self.conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS detected_folders (
+                account_id TEXT NOT NULL,
+                folder_type TEXT NOT NULL,
+                folder_name TEXT NOT NULL,
+                detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (account_id, folder_type)
+            );
+            ",
+        )?;
+
+        Ok(())
+    }
+
+    // ── Detected folder cache ────────────────────────────────────────
+
+    /// Get the cached drafts folder name for an account.
+    pub fn get_drafts_folder(&self, account_id: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let folder: Option<String> = self.conn.query_row(
+            "SELECT folder_name FROM detected_folders WHERE account_id = ?1 AND folder_type = 'drafts'",
+            rusqlite::params![account_id],
+            |row| row.get(0),
+        ).optional()?;
+        Ok(folder)
+    }
+
+    /// Get the cached sent folder name for an account.
+    pub fn get_sent_folder(&self, account_id: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let folder: Option<String> = self.conn.query_row(
+            "SELECT folder_name FROM detected_folders WHERE account_id = ?1 AND folder_type = 'sent'",
+            rusqlite::params![account_id],
+            |row| row.get(0),
+        ).optional()?;
+        Ok(folder)
+    }
+
+    /// Cache a detected folder for an account.
+    pub fn set_detected_folder(
+        &self,
+        account_id: &str,
+        folder_type: &str,
+        folder_name: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO detected_folders (account_id, folder_type, folder_name, detected_at)
+             VALUES (?1, ?2, ?3, datetime('now'))
+             ON CONFLICT(account_id, folder_type) DO UPDATE SET
+                folder_name = excluded.folder_name,
+                detected_at = excluded.detected_at",
+            rusqlite::params![account_id, folder_type, folder_name],
+        )?;
         Ok(())
     }
 }

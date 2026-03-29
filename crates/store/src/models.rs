@@ -75,6 +75,9 @@ pub struct Draft {
     pub updated_at: String,
     pub sent_at: Option<String>,
     pub created_by: Option<String>,
+    /// IMAP UID of the draft in the server's Drafts folder (if synced).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imap_uid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -38,7 +38,8 @@ impl Database {
         let mut stmt = self.conn().prepare(
             "SELECT id, account_id, status, to_addr, cc_addr, bcc_addr, reply_to, subject,
                     text_content, html_content, in_reply_to, metadata, attachments, message_id,
-                    send_after, snoozed_until, created_at, updated_at, sent_at, created_by
+                    send_after, snoozed_until, created_at, updated_at, sent_at, created_by,
+                    imap_uid
              FROM drafts WHERE id = ?1",
         )?;
 
@@ -47,6 +48,7 @@ impl Database {
                 let status_str: String = row.get(2)?;
                 let metadata_str: Option<String> = row.get(11)?;
                 let attachments_str: String = row.get(12)?;
+                let imap_uid_i64: Option<i64> = row.get(20)?;
                 Ok(Draft {
                     id: row.get(0)?,
                     account_id: row.get(1)?,
@@ -70,6 +72,7 @@ impl Database {
                     updated_at: row.get(17)?,
                     sent_at: row.get(18)?,
                     created_by: row.get(19)?,
+                    imap_uid: imap_uid_i64.map(|v| v as u32),
                 })
             })
             .optional()?;
@@ -87,13 +90,15 @@ impl Database {
         let sql = if status.is_some() {
             "SELECT id, account_id, status, to_addr, cc_addr, bcc_addr, reply_to, subject,
                     text_content, html_content, in_reply_to, metadata, attachments, message_id,
-                    send_after, snoozed_until, created_at, updated_at, sent_at, created_by
+                    send_after, snoozed_until, created_at, updated_at, sent_at, created_by,
+                    imap_uid
              FROM drafts WHERE account_id = ?1 AND status = ?2
              ORDER BY updated_at DESC LIMIT ?3 OFFSET ?4"
         } else {
             "SELECT id, account_id, status, to_addr, cc_addr, bcc_addr, reply_to, subject,
                     text_content, html_content, in_reply_to, metadata, attachments, message_id,
-                    send_after, snoozed_until, created_at, updated_at, sent_at, created_by
+                    send_after, snoozed_until, created_at, updated_at, sent_at, created_by,
+                    imap_uid
              FROM drafts WHERE account_id = ?1
              ORDER BY updated_at DESC LIMIT ?3 OFFSET ?4"
         };
@@ -143,10 +148,29 @@ impl Database {
         Ok(rows > 0)
     }
 
+    /// Store the IMAP UID assigned by the server after APPEND to the Drafts folder.
+    pub fn update_draft_imap_uid(&self, id: &str, imap_uid: u32) -> Result<()> {
+        self.conn().execute(
+            "UPDATE drafts SET imap_uid = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![imap_uid as i64, id],
+        )?;
+        Ok(())
+    }
+
+    /// Store the RFC822 Message-ID for a draft (set during IMAP APPEND).
+    pub fn mark_draft_message_id(&self, id: &str, message_id: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE drafts SET message_id = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![message_id, id],
+        )?;
+        Ok(())
+    }
+
     fn map_draft(row: &rusqlite::Row<'_>) -> rusqlite::Result<Draft> {
         let status_str: String = row.get(2)?;
         let metadata_str: Option<String> = row.get(11)?;
         let attachments_str: String = row.get(12)?;
+        let imap_uid_i64: Option<i64> = row.get(20)?;
         Ok(Draft {
             id: row.get(0)?,
             account_id: row.get(1)?,
@@ -168,6 +192,7 @@ impl Database {
             updated_at: row.get(17)?,
             sent_at: row.get(18)?,
             created_by: row.get(19)?,
+            imap_uid: imap_uid_i64.map(|v| v as u32),
         })
     }
 }
@@ -215,9 +240,11 @@ mod tests {
 
         assert_eq!(draft.to_addr, "to@test.com");
         assert_eq!(draft.status, DraftStatus::Draft);
+        assert_eq!(draft.imap_uid, None);
 
         let fetched = db.get_draft(&draft.id).unwrap().unwrap();
         assert_eq!(fetched.id, draft.id);
+        assert_eq!(fetched.imap_uid, None);
     }
 
     #[test]
@@ -230,5 +257,50 @@ mod tests {
         assert!(db.discard_draft(&draft.id).unwrap());
         let fetched = db.get_draft(&draft.id).unwrap().unwrap();
         assert_eq!(fetched.status, DraftStatus::Discarded);
+    }
+
+    #[test]
+    fn update_imap_uid() {
+        let db = setup();
+        let draft = db
+            .create_draft("acc1", "to@test.com", Some("Subject"), Some("Body"),
+                         None, None, None, None, None)
+            .unwrap();
+
+        assert_eq!(draft.imap_uid, None);
+
+        db.update_draft_imap_uid(&draft.id, 42).unwrap();
+        let fetched = db.get_draft(&draft.id).unwrap().unwrap();
+        assert_eq!(fetched.imap_uid, Some(42));
+    }
+
+    #[test]
+    fn mark_message_id() {
+        let db = setup();
+        let draft = db
+            .create_draft("acc1", "to@test.com", Some("Subject"), None,
+                         None, None, None, None, None)
+            .unwrap();
+
+        assert_eq!(draft.message_id, None);
+
+        db.mark_draft_message_id(&draft.id, "<test@example.com>").unwrap();
+        let fetched = db.get_draft(&draft.id).unwrap().unwrap();
+        assert_eq!(fetched.message_id, Some("<test@example.com>".to_string()));
+    }
+
+    #[test]
+    fn list_drafts_includes_imap_uid() {
+        let db = setup();
+        let draft = db
+            .create_draft("acc1", "to@test.com", Some("Subject"), None,
+                         None, None, None, None, None)
+            .unwrap();
+
+        db.update_draft_imap_uid(&draft.id, 99).unwrap();
+
+        let drafts = db.list_drafts("acc1", Some("draft"), 100, 0).unwrap();
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].imap_uid, Some(99));
     }
 }
