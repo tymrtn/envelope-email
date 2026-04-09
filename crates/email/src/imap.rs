@@ -6,14 +6,14 @@ use std::sync::Arc;
 
 use async_imap::Session;
 use envelope_email_store::models::{
-    AccountWithCredentials, AttachmentMeta, Message, MessageSummary,
+    AccountWithCredentials, AttachmentMeta, FolderStats, Message, MessageSummary,
 };
 use futures_util::StreamExt;
 use mail_parser::MimeHeaders;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::errors::ImapError;
 
@@ -106,6 +106,58 @@ pub async fn list_folders(client: &mut ImapClient) -> Result<Vec<String>, ImapEr
     Ok(folders)
 }
 
+/// Fetch stats for a single folder via IMAP `STATUS (MESSAGES RECENT UNSEEN)`.
+///
+/// Unlike `fetch_inbox`, this does NOT `SELECT` the folder (which would cause
+/// unsolicited responses on some servers); it uses the STATUS command which
+/// is read-only and designed for this purpose. Suitable for sidebar rendering
+/// where we want counts without switching the active mailbox.
+pub async fn folder_stats(
+    client: &mut ImapClient,
+    folder: &str,
+) -> Result<FolderStats, ImapError> {
+    validate_imap_input(folder)?;
+
+    let mailbox = client
+        .session
+        .status(folder, "(MESSAGES RECENT UNSEEN)")
+        .await
+        .map_err(|e| ImapError::Protocol(format!("STATUS {folder}: {e}")))?;
+
+    Ok(FolderStats {
+        folder: folder.to_string(),
+        exists: mailbox.exists,
+        recent: mailbox.recent,
+        unseen: mailbox.unseen,
+    })
+}
+
+/// Fetch stats for every folder in the account, returning one [`FolderStats`]
+/// per folder (in the same order as `list_folders`). Folders that fail the
+/// STATUS query are skipped with a warning rather than propagating the error.
+pub async fn list_folder_stats(
+    client: &mut ImapClient,
+) -> Result<Vec<FolderStats>, ImapError> {
+    let folders = list_folders(client).await?;
+    let mut stats = Vec::with_capacity(folders.len());
+    for folder in &folders {
+        match folder_stats(client, folder).await {
+            Ok(s) => stats.push(s),
+            Err(e) => {
+                warn!("folder_stats skipped {folder}: {e}");
+                // Emit a zeroed entry so the sidebar still shows the folder name.
+                stats.push(FolderStats {
+                    folder: folder.clone(),
+                    exists: 0,
+                    recent: 0,
+                    unseen: None,
+                });
+            }
+        }
+    }
+    Ok(stats)
+}
+
 /// Fetch message summaries from a folder.
 pub async fn fetch_inbox(
     client: &mut ImapClient,
@@ -187,7 +239,22 @@ pub async fn fetch_inbox(
     Ok(summaries)
 }
 
+/// IMAP fetch descriptor used by `fetch_message`.
+///
+/// **Critical: must use `BODY.PEEK[]`, not `BODY[]`.** `BODY[]` auto-sets
+/// the `\Seen` flag on the server as a side effect of fetching; `BODY.PEEK[]`
+/// does not. The dashboard "read message" action uses this fetch, and
+/// users expect messages to stay unread until they explicitly mark them.
+///
+/// If you change this constant, the `test_fetch_uses_body_peek` regression
+/// test will fail. That's intentional — do not silently loosen this.
+pub const FETCH_MESSAGE_DESCRIPTOR: &str = "(UID FLAGS BODY.PEEK[])";
+
 /// Fetch a full message by UID, parsing the body with mail-parser.
+///
+/// Uses `BODY.PEEK[]` so reading a message does NOT auto-mark it as seen.
+/// Call [`mark_seen`] explicitly when the user indicates they want the
+/// message flagged as read.
 pub async fn fetch_message(
     client: &mut ImapClient,
     folder: &str,
@@ -204,7 +271,7 @@ pub async fn fetch_message(
     let uid_range = format!("{uid}");
     let messages = client
         .session
-        .uid_fetch(&uid_range, "(UID FLAGS BODY.PEEK[])")
+        .uid_fetch(&uid_range, FETCH_MESSAGE_DESCRIPTOR)
         .await
         .map_err(|e| ImapError::Protocol(format!("UID FETCH {uid}: {e}")))?;
 
@@ -585,6 +652,19 @@ pub async fn set_flag(
     Ok(())
 }
 
+/// Mark a message as seen (read) by setting the `\Seen` flag.
+///
+/// Since [`fetch_message`] uses `BODY.PEEK[]` to avoid auto-marking messages
+/// as read, callers must invoke this explicitly when the user indicates they
+/// want the message flagged as seen (e.g., dashboard "Mark as read" button).
+pub async fn mark_seen(
+    client: &mut ImapClient,
+    folder: &str,
+    uid: u32,
+) -> Result<(), ImapError> {
+    set_flag(client, folder, uid, "seen").await
+}
+
 /// Remove a flag from a message by UID.
 pub async fn remove_flag(
     client: &mut ImapClient,
@@ -717,5 +797,42 @@ fn imap_envelope_addresses(addrs: &Option<Vec<imap_proto::types::Address<'_>>>) 
             .collect::<Vec<_>>()
             .join(", "),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression guard: reading a message must NEVER auto-set the \Seen flag.
+    ///
+    /// The dashboard "read message" action calls `fetch_message` for every
+    /// message the user opens. If this descriptor were silently changed from
+    /// `BODY.PEEK[]` to `BODY[]`, every message the user clicked would be
+    /// marked as read on the server — surprising and destructive behavior.
+    ///
+    /// If this test fails, you are either (a) fixing something legitimate
+    /// (in which case update the test) or (b) about to ship a regression.
+    #[test]
+    fn test_fetch_uses_body_peek() {
+        assert_eq!(
+            FETCH_MESSAGE_DESCRIPTOR, "(UID FLAGS BODY.PEEK[])",
+            "fetch_message must use BODY.PEEK[] to avoid auto-setting \\Seen"
+        );
+        assert!(
+            FETCH_MESSAGE_DESCRIPTOR.contains("BODY.PEEK"),
+            "fetch descriptor must contain BODY.PEEK"
+        );
+        assert!(
+            !FETCH_MESSAGE_DESCRIPTOR.contains("BODY[") || FETCH_MESSAGE_DESCRIPTOR.contains("BODY.PEEK["),
+            "fetch descriptor must not contain BODY[ without .PEEK"
+        );
+    }
+
+    #[test]
+    fn test_map_flag_name_seen() {
+        assert_eq!(map_flag_name("seen"), "\\Seen");
+        assert_eq!(map_flag_name("SEEN"), "\\Seen");
+        assert_eq!(map_flag_name("flagged"), "\\Flagged");
     }
 }

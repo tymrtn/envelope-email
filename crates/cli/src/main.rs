@@ -6,7 +6,7 @@ mod commands;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "envelope-email", about = "BYO mailbox email client")]
+#[command(name = "envelope", version, about = "BYO mailbox email client with agent-native primitives")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

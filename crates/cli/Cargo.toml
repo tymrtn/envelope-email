@@ -9,7 +9,7 @@ authors.workspace = true
 description = "BYO mailbox email client with agent-native primitives"
 
 [[bin]]
-name = "envelope-email"
+name = "envelope"
 path = "src/main.rs"
 
 [dependencies]

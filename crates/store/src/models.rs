@@ -182,6 +182,19 @@ pub struct AttachmentMeta {
     pub content_id: Option<String>,
 }
 
+/// IMAP folder stats returned by `STATUS (MESSAGES RECENT UNSEEN)`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderStats {
+    /// Name of the folder these stats apply to.
+    pub folder: String,
+    /// Total messages in the folder (MESSAGES).
+    pub exists: u32,
+    /// Messages with \Recent flag.
+    pub recent: u32,
+    /// Messages without \Seen flag (Option because not all servers return this).
+    pub unseen: Option<u32>,
+}
+
 /// Discovery result for IMAP/SMTP auto-configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryResult {
