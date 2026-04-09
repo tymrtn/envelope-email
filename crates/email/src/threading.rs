@@ -12,7 +12,6 @@ use envelope_email_store::models::AccountWithCredentials;
 use tracing::{debug, info, warn};
 
 use crate::errors::ImapError;
-use crate::folders;
 use crate::imap;
 use crate::provider;
 
@@ -385,8 +384,8 @@ where
                             addresses_overlap(
                                 &from_addr,
                                 &to_addr,
-                                &tm.from_address,
-                                &tm.to_addresses,
+                                tm.from_address.as_deref().unwrap_or(""),
+                                tm.to_addresses.as_deref().unwrap_or(""),
                             )
                         });
                         if has_overlap {

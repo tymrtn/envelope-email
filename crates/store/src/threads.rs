@@ -426,54 +426,10 @@ impl Database {
         Ok(deleted as u32)
     }
 
-    /// Get the detected sent folder for an account.
-    pub fn get_sent_folder(&self, account_id: &str) -> Result<Option<String>> {
-        let folder: Option<String> = self.conn().query_row(
-            "SELECT folder_name FROM detected_folders WHERE account_id = ?1 AND folder_type = 'sent'",
-            params![account_id],
-            |row| row.get(0),
-        ).optional()?;
-        Ok(folder)
-    }
-
-    /// Get the detected drafts folder for an account.
-    pub fn get_drafts_folder(&self, account_id: &str) -> Result<Option<String>> {
-        let folder: Option<String> = self.conn().query_row(
-            "SELECT folder_name FROM detected_folders WHERE account_id = ?1 AND folder_type = 'drafts'",
-            params![account_id],
-            |row| row.get(0),
-        ).optional()?;
-        Ok(folder)
-    }
-
-    /// Cache a detected folder for an account.
-    pub fn set_detected_folder(
-        &self,
-        account_id: &str,
-        folder_type: &str,
-        folder_name: &str,
-    ) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO detected_folders (account_id, folder_type, folder_name, detected_at)
-             VALUES (?1, ?2, ?3, datetime('now'))
-             ON CONFLICT(account_id, folder_type) DO UPDATE SET
-                folder_name = excluded.folder_name,
-                detected_at = excluded.detected_at",
-            params![account_id, folder_type, folder_name],
-        )?;
-        Ok(())
-    }
-
-    /// Get all detected folders for an account.
-    pub fn get_detected_folders(&self, account_id: &str) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT folder_type, folder_name FROM detected_folders WHERE account_id = ?1",
-        )?;
-        let rows = stmt.query_map(params![account_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
-    }
+    // NOTE: get_sent_folder / get_drafts_folder / set_detected_folder /
+    // get_detected_folders used to live here but were moved to db.rs after
+    // this file was orphaned. Do not re-add them — the canonical
+    // implementations are in db.rs.
 
     // ── Row mappers ──────────────────────────────────────────────────
 
@@ -616,9 +572,9 @@ mod tests {
 
         let messages = db.get_thread_messages(&thread.thread_id).unwrap();
         assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].from_address, "alice@example.com");
+        assert_eq!(messages[0].from_address.as_deref(), Some("alice@example.com"));
         assert!(!messages[0].is_outbound);
-        assert_eq!(messages[1].from_address, "bob@example.com");
+        assert_eq!(messages[1].from_address.as_deref(), Some("bob@example.com"));
         assert!(messages[1].is_outbound);
     }
 

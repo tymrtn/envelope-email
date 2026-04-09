@@ -652,6 +652,35 @@ pub async fn set_flag(
     Ok(())
 }
 
+/// Create a new mailbox (folder) on the IMAP server.
+///
+/// Idempotent: if the mailbox already exists, the server returns an error
+/// which is logged and converted into success (the caller doesn't care
+/// whether the folder was created just now or previously). Used by
+/// `snooze` to ensure the `Snoozed` folder exists before moving messages.
+pub async fn create_folder(
+    client: &mut ImapClient,
+    folder: &str,
+) -> Result<(), ImapError> {
+    validate_imap_input(folder)?;
+    match client.session.create(folder).await {
+        Ok(()) => {
+            debug!("created folder: {folder}");
+            Ok(())
+        }
+        Err(e) => {
+            // Already exists is fine — log and continue.
+            let msg = e.to_string();
+            if msg.contains("already exists") || msg.contains("ALREADYEXISTS") {
+                debug!("folder {folder} already exists");
+                Ok(())
+            } else {
+                Err(ImapError::Protocol(format!("CREATE {folder}: {e}")))
+            }
+        }
+    }
+}
+
 /// Mark a message as seen (read) by setting the `\Seen` flag.
 ///
 /// Since [`fetch_message`] uses `BODY.PEEK[]` to avoid auto-marking messages

@@ -73,8 +73,8 @@ pub async fn run_show(
         } else {
             messages
                 .last()
-                .map(|m| m.subject.clone())
-                .unwrap_or(thread.subject_normalized.clone())
+                .and_then(|m| m.subject.clone())
+                .unwrap_or_else(|| thread.subject_normalized.clone())
         };
         println!(
             "Thread: {} ({} message{})",
@@ -86,11 +86,13 @@ pub async fn run_show(
 
         for msg in &messages {
             let direction = if msg.is_outbound { "→" } else { "←" };
-            let date_short = format_short_date(&msg.date);
+            let date_short = format_short_date(msg.date.as_deref().unwrap_or(""));
+            let from = msg.from_address.as_deref().unwrap_or("(unknown)");
+            let to = msg.to_addresses.as_deref().unwrap_or("(unknown)");
 
             println!(
                 "{} [{}] {} → {}",
-                direction, date_short, msg.from_address, msg.to_addresses,
+                direction, date_short, from, to,
             );
             if let Some(ref snippet) = msg.snippet {
                 // Indent snippet
@@ -135,7 +137,7 @@ pub async fn run_list(
                 .unwrap_or_default();
             let participants: std::collections::HashSet<String> = messages
                 .iter()
-                .map(|m| m.from_address.to_lowercase())
+                .filter_map(|m| m.from_address.as_ref().map(|s| s.to_lowercase()))
                 .collect();
 
             enriched.push(serde_json::json!({

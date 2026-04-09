@@ -127,12 +127,73 @@ impl Database {
                 activated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS snoozed (
+                id TEXT PRIMARY KEY,
+                account TEXT NOT NULL,
+                uid INTEGER NOT NULL,
+                original_folder TEXT NOT NULL,
+                snoozed_folder TEXT NOT NULL,
+                return_at TEXT NOT NULL,
+                message_id TEXT,
+                subject TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                reason TEXT,
+                note TEXT,
+                recipient TEXT,
+                escalation_tier INTEGER NOT NULL DEFAULT 0,
+                reply_received INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS threads (
+                thread_id TEXT PRIMARY KEY,
+                subject_normalized TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_activity TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                account_id TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS thread_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL REFERENCES threads(thread_id),
+                uid INTEGER NOT NULL,
+                message_id TEXT,
+                in_reply_to TEXT,
+                reference_ids TEXT,
+                folder TEXT NOT NULL,
+                from_address TEXT,
+                to_addresses TEXT,
+                date TEXT,
+                subject TEXT,
+                is_outbound INTEGER NOT NULL DEFAULT 0,
+                snippet TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_drafts_account_status
                 ON drafts(account_id, status);
             CREATE INDEX IF NOT EXISTS idx_drafts_send_after
                 ON drafts(send_after) WHERE status = 'draft';
             CREATE INDEX IF NOT EXISTS idx_action_log_account
                 ON action_log(account_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_snoozed_return_at
+                ON snoozed(return_at);
+            CREATE INDEX IF NOT EXISTS idx_snoozed_account_uid
+                ON snoozed(account, uid);
+            CREATE INDEX IF NOT EXISTS idx_threads_account
+                ON threads(account_id, last_activity);
+            CREATE INDEX IF NOT EXISTS idx_thread_messages_thread
+                ON thread_messages(thread_id);
+            CREATE INDEX IF NOT EXISTS idx_thread_messages_uid
+                ON thread_messages(uid, folder);
+
+            CREATE TABLE IF NOT EXISTS thread_sync_state (
+                account_id TEXT NOT NULL,
+                folder TEXT NOT NULL,
+                last_uid INTEGER NOT NULL DEFAULT 0,
+                uidvalidity INTEGER,
+                synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (account_id, folder)
+            );
             ",
         )?;
 

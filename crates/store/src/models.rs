@@ -195,6 +195,102 @@ pub struct FolderStats {
     pub unseen: Option<u32>,
 }
 
+/// A conversation thread backing the `threads` SQLite table.
+///
+/// Threads are grouped from individual messages by normalized subject
+/// (via `threading::normalize_subject`) plus RFC 2822 `References` /
+/// `In-Reply-To` header chain walking. See
+/// `crates/email/src/threading.rs::build_threads`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Thread {
+    /// UUID for this thread.
+    pub thread_id: String,
+    /// Subject normalized by stripping `Re:`, `Fwd:`, and similar prefixes.
+    pub subject_normalized: String,
+    /// ISO 8601 datetime of the earliest message in the thread.
+    pub first_seen: String,
+    /// ISO 8601 datetime of the most recent message in the thread.
+    pub last_activity: String,
+    /// Total messages in this thread.
+    pub message_count: i64,
+    /// Owning account identifier.
+    pub account_id: String,
+}
+
+/// A single message belonging to a [`Thread`], backing the `thread_messages` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadMessage {
+    /// Auto-increment primary key (SQLite ROWID).
+    pub id: i64,
+    /// FK to `threads.thread_id`.
+    pub thread_id: String,
+    /// IMAP UID of the message in `folder`.
+    pub uid: u32,
+    /// RFC 2822 `Message-ID` header value (for cross-folder threading).
+    pub message_id: Option<String>,
+    /// RFC 2822 `In-Reply-To` header value.
+    pub in_reply_to: Option<String>,
+    /// RFC 2822 `References` header — space-separated list of message-ids.
+    pub references: Option<String>,
+    /// Folder the message lives in (`INBOX`, `[Gmail]/Sent Mail`, etc.).
+    pub folder: String,
+    /// Sender address (or `None` if unparseable).
+    pub from_address: Option<String>,
+    /// Comma-separated list of recipient addresses.
+    pub to_addresses: Option<String>,
+    /// ISO 8601 datetime of the message's `Date:` header.
+    pub date: Option<String>,
+    /// Subject as it appeared on this specific message (before normalization).
+    pub subject: Option<String>,
+    /// True if the message was sent by the account owner (found in Sent folder).
+    pub is_outbound: bool,
+    /// Short plain-text preview of the body (for thread list rendering).
+    pub snippet: Option<String>,
+}
+
+/// A snoozed message record backing the `snoozed` SQLite table.
+///
+/// Snoozing moves a message from its original folder to a dedicated
+/// `Snoozed` IMAP folder and records a `return_at` timestamp. When the
+/// return time elapses, a background sweep (`envelope unsnooze --once`
+/// or the `envelope serve` ticker) moves it back to its original folder.
+///
+/// The DB stores UID as INTEGER (SQLite has no u32) and `reply_received`
+/// as INTEGER (0/1). Rust-side fields reflect the logical types used by
+/// callers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnoozedMessage {
+    /// UUID for this snooze record (primary key).
+    pub id: String,
+    /// Owning account identifier (usually an email address).
+    pub account: String,
+    /// IMAP UID of the message in `snoozed_folder` at time of insertion.
+    /// Stored as INTEGER in SQLite.
+    pub uid: u32,
+    /// Folder the message was in before snoozing (e.g., `INBOX`).
+    pub original_folder: String,
+    /// Folder the message was moved to (default: `Snoozed`).
+    pub snoozed_folder: String,
+    /// ISO 8601 datetime when the message should return to its original folder.
+    pub return_at: String,
+    /// Message-ID header (for idempotent re-find after UID changes).
+    pub message_id: Option<String>,
+    /// Subject at time of snoozing (for display only).
+    pub subject: Option<String>,
+    /// ISO 8601 datetime the record was created.
+    pub created_at: String,
+    /// Optional reason code: `follow-up`, `waiting-reply`, `defer`, `reminder`, `review`.
+    pub reason: Option<String>,
+    /// Optional user note / annotation.
+    pub note: Option<String>,
+    /// Optional recipient grouping (for "waiting for X's reply" follow-ups).
+    pub recipient: Option<String>,
+    /// How many times this snooze has been escalated (e.g., bumped forward).
+    pub escalation_tier: i32,
+    /// True if the original recipient has replied (relevant for waiting-reply snoozes).
+    pub reply_received: bool,
+}
+
 /// Discovery result for IMAP/SMTP auto-configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryResult {

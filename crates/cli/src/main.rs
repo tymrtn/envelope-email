@@ -196,6 +196,27 @@ enum Commands {
         subcommand: ActionsCmd,
     },
 
+    /// Snooze a message, list snoozed, or unsnooze
+    Snooze {
+        #[command(subcommand)]
+        subcommand: SnoozeCmd,
+    },
+
+    /// Check for due snoozes and return them to their original folder
+    Unsnooze {
+        /// Run a single sweep and exit (for cron / serve ticker)
+        #[arg(long)]
+        once: bool,
+        /// Account ID or email (sweeps all accounts if omitted)
+        #[arg(long)]
+        account: Option<String>,
+    },
+
+    /// View conversation threads
+    Thread {
+        #[command(subcommand)]
+        subcommand: ThreadCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -365,6 +386,81 @@ enum ActionsCmd {
         /// Account ID or email
         #[arg(long)]
         account: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SnoozeCmd {
+    /// Snooze a message — move it to the Snoozed folder with a return time
+    Set {
+        /// Message UID
+        uid: u32,
+        /// When to return: ISO 8601 (2026-03-30T09:00), relative (2h/3d/1w),
+        /// or natural (tomorrow, monday, "next week")
+        #[arg(long)]
+        until: String,
+        /// Source folder
+        #[arg(long, default_value = "INBOX")]
+        folder: String,
+        /// Optional reason: follow-up, waiting-reply, defer, reminder, review
+        #[arg(long)]
+        reason: Option<String>,
+        /// Optional note / annotation
+        #[arg(long)]
+        note: Option<String>,
+        /// Optional recipient grouping (for waiting-reply follow-ups)
+        #[arg(long)]
+        recipient: Option<String>,
+        /// Account ID or email
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// List snoozed messages
+    List {
+        /// Account ID or email (shows all accounts if omitted)
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Unsnooze a single message immediately (by UID in the original folder)
+    Cancel {
+        /// Message UID (the original UID at time of snoozing)
+        uid: u32,
+        /// Account ID or email
+        #[arg(long)]
+        account: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ThreadCmd {
+    /// Show the full conversation thread for a message UID
+    Show {
+        /// Message UID
+        uid: u32,
+        /// IMAP folder
+        #[arg(long, default_value = "INBOX")]
+        folder: String,
+        /// Account ID or email
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// List recent threads
+    List {
+        /// Account ID or email
+        #[arg(long)]
+        account: Option<String>,
+        /// Maximum threads to return
+        #[arg(long, default_value = "50")]
+        limit: u32,
+    },
+    /// Build thread index from IMAP messages (expensive, do periodically)
+    Build {
+        /// Account ID or email
+        #[arg(long)]
+        account: Option<String>,
+        /// Maximum messages to scan
+        #[arg(long, default_value = "200")]
+        limit: u32,
     },
 }
 
@@ -573,6 +669,53 @@ fn main() {
             ActionsCmd::Tail { .. } => {
                 eprintln!("Not yet implemented: actions tail");
                 std::process::exit(1);
+            }
+        },
+
+        Commands::Snooze { subcommand } => match subcommand {
+            SnoozeCmd::Set {
+                uid,
+                until,
+                folder,
+                reason,
+                note,
+                recipient,
+                account,
+            } => commands::snooze::run_snooze(
+                uid,
+                &until,
+                &folder,
+                account.as_deref(),
+                reason.as_deref(),
+                note.as_deref(),
+                recipient.as_deref(),
+                cli.json,
+                backend,
+            ),
+            SnoozeCmd::List { account } => {
+                commands::snooze::run_list(account.as_deref(), cli.json, backend)
+            }
+            SnoozeCmd::Cancel { uid, account } => {
+                commands::snooze::run_unsnooze(uid, account.as_deref(), cli.json, backend)
+            }
+        },
+
+        Commands::Unsnooze { once: _, account } => {
+            commands::snooze::run_check(account.as_deref(), cli.json, backend)
+        }
+
+        Commands::Thread { subcommand } => match subcommand {
+            ThreadCmd::Show {
+                uid,
+                folder,
+                account,
+            } => commands::thread::run_show(uid, &folder, account.as_deref(), cli.json, backend),
+            ThreadCmd::List {
+                account,
+                limit,
+            } => commands::thread::run_list(account.as_deref(), limit, cli.json, backend),
+            ThreadCmd::Build { account, limit } => {
+                commands::thread::run_build(account.as_deref(), limit, cli.json, backend)
             }
         },
     };
