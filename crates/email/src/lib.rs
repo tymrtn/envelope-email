@@ -7,6 +7,7 @@ pub mod folders;
 pub mod imap;
 pub mod provider;
 pub mod reply;
+pub mod rules;
 pub mod smtp;
 pub mod threading;
 
