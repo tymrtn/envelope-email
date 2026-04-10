@@ -137,12 +137,18 @@ function selectAccount(acct) {
 async function loadFolders() {
   if (!state.currentAccount) return;
   setRefresh('loading folders…');
+  // Show loading state immediately
+  const list = $('folder-list');
+  clear(list);
+  list.appendChild(el('div', { class: 'px-3 py-6 text-xs text-mid font-mono text-center', text: 'Loading folders…' }));
   try {
     const data = await api('GET', `/accounts/${state.currentAccount.id}/folders`);
     state.folders = data.folders || [];
     renderFolders(data);
     setRefresh('ok');
   } catch (e) {
+    clear(list);
+    list.appendChild(el('div', { class: 'px-3 py-4 text-xs text-warn font-mono', text: 'Failed to load folders' }));
     setRefresh('error');
     toast('Folders: ' + e.message, 'error');
   }
@@ -194,6 +200,11 @@ async function loadMessages() {
   if (state.currentFolder === '__snoozed__') return loadSnoozed();
 
   setRefresh('loading messages…');
+  // Show loading state immediately
+  const list = $('message-list');
+  clear(list);
+  list.appendChild(el('div', { class: 'px-4 py-12 text-center text-sm text-mid', text: 'Loading messages…' }));
+  $('list-count').textContent = '';
   try {
     const data = await api(
       'GET',
@@ -204,6 +215,8 @@ async function loadMessages() {
     $('list-count').textContent = `${state.messages.length} message${state.messages.length === 1 ? '' : 's'}`;
     setRefresh('ok');
   } catch (e) {
+    clear(list);
+    list.appendChild(el('div', { class: 'px-4 py-12 text-center text-sm text-warn', text: 'Failed to load messages' }));
     setRefresh('error');
     toast('Messages: ' + e.message, 'error');
   }
@@ -250,6 +263,14 @@ function formatDate(iso) {
 // ── Message reader ─────────────────────────────────────────────────
 async function openMessage(uid) {
   if (!state.currentAccount) return;
+  // Show reader immediately with loading state
+  $('reader-subject').textContent = 'Loading…';
+  $('reader-from').textContent = '';
+  $('reader-to').textContent = '';
+  $('reader-date').textContent = '';
+  clear($('reader-body'));
+  $('reader-body').appendChild(el('div', { class: 'text-center text-mid py-12', text: 'Loading message…' }));
+  $('reader').classList.add('show');
   try {
     const data = await api(
       'GET',
@@ -257,7 +278,11 @@ async function openMessage(uid) {
     );
     state.currentMessage = data.message;
     renderReader();
-  } catch (e) { toast('Open: ' + e.message, 'error'); }
+  } catch (e) {
+    $('reader-subject').textContent = 'Error';
+    clear($('reader-body'));
+    $('reader-body').appendChild(el('div', { class: 'text-center text-warn py-12', text: e.message }));
+  }
 }
 
 function renderReader() {
