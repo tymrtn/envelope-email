@@ -12,7 +12,7 @@ Licensed under [FSL-1.1-ALv2](LICENSE).
 - **Auto-discovery**: SRV → MX → common patterns → TCP probe. Knows Gmail, Outlook/Office 365, Microsoft Workmail, Migadu, Fastmail, self-hosted Dovecot, generic IMAP.
 - **Agent-native**: every command supports `--json`. Pipe to `jq`, feed to an LLM, whatever.
 - **Batteries included**: snooze, threading, reply/reply-all, attachments, drafts, search. Ships with a local dashboard at [http://localhost:3141](http://localhost:3141).
-- **Single-purpose**: Envelope does email. Nothing else.
+- **Email mastery for agents**: one tool, total control over the mailbox.
 
 ## Install
 
