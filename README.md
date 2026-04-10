@@ -18,7 +18,8 @@ Licensed under [FSL-1.1-ALv2](LICENSE).
 
 ```bash
 # Homebrew
-brew install tymrtn/envelope/envelope
+brew tap tymrtn/envelope
+brew install envelope
 
 # From source
 git clone https://github.com/tymrtn/envelope-email
