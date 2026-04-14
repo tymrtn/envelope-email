@@ -103,7 +103,7 @@ pub async fn serve_with_backend(
         .route("/static/{*path}", get(static_asset))
         .nest("/api", api)
         .layer(cors)
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr)
@@ -112,10 +112,98 @@ pub async fn serve_with_backend(
 
     info!("dashboard listening on http://localhost:{port}");
     println!("Envelope dashboard running at http://localhost:{port}");
+    println!("Background unsnooze sweep running every 60s");
+
+    // Spawn background unsnooze ticker (checks every 60s for due snoozes)
+    tokio::spawn(async move {
+        let ticker_state = state;
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if let Err(e) = run_unsnooze_sweep(&ticker_state).await {
+                tracing::warn!("unsnooze sweep error: {e}");
+            }
+        }
+    });
 
     axum::serve(listener, app)
         .await
         .map_err(|e| anyhow::anyhow!("server error: {e}"))
+}
+
+// ── Background unsnooze sweep ────────────────────────────────────────
+
+async fn run_unsnooze_sweep(state: &AppState) -> anyhow::Result<()> {
+    let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let due = {
+        let db = state.db.lock().await;
+        db.list_snoozed_due(&now, None)
+            .map_err(|e| anyhow::anyhow!("db error: {e}"))?
+    };
+
+    if due.is_empty() {
+        return Ok(());
+    }
+
+    info!("unsnooze sweep: {} message(s) due", due.len());
+
+    for msg in &due {
+        // Try to get IMAP connection for this message's account
+        let (client_arc, _creds) = match state.get_or_create_imap(&msg.account).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("unsnooze: IMAP connect failed for {}: {e}", msg.account);
+                continue;
+            }
+        };
+        let mut client = client_arc.lock().await;
+
+        // Find the current UID (may have changed after move)
+        let current_uid = if let Some(ref mid) = msg.message_id {
+            let mid_clean = mid.trim_matches(|c| c == '<' || c == '>');
+            match envelope_email_transport::imap::find_uid_by_message_id(
+                &mut client,
+                &msg.snoozed_folder,
+                mid_clean,
+            )
+            .await
+            {
+                Ok(Some(uid)) => uid,
+                _ => msg.uid,
+            }
+        } else {
+            msg.uid
+        };
+
+        // Move back to original folder
+        match envelope_email_transport::imap::move_message(
+            &mut client,
+            current_uid,
+            &msg.snoozed_folder,
+            &msg.original_folder,
+        )
+        .await
+        {
+            Ok(()) => {
+                let db = state.db.lock().await;
+                let _ = db.delete_snoozed(&msg.id);
+                info!(
+                    "unsnoozed UID {} back to {} ({})",
+                    msg.uid, msg.original_folder, msg.account
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "unsnooze: move UID {} failed for {}: {e}",
+                    msg.uid,
+                    msg.account
+                );
+                state.evict_imap(&msg.account).await;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // ── Static asset serving ─────────────────────────────────────────────
