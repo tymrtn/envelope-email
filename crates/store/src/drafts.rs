@@ -158,6 +158,33 @@ impl Database {
         Ok(rows > 0)
     }
 
+    /// Set the `send_after` timestamp on a draft (for scheduled sending).
+    pub fn update_draft_send_after(&self, id: &str, send_after: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE drafts SET send_after = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![send_after, id],
+        )?;
+        Ok(())
+    }
+
+    /// Query drafts that are due for scheduled sending.
+    pub fn list_drafts_due_for_send(&self) -> Result<Vec<Draft>> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id, account_id, status, to_addr, cc_addr, bcc_addr, reply_to, subject,
+                    text_content, html_content, in_reply_to, metadata, attachments, message_id,
+                    send_after, snoozed_until, created_at, updated_at, sent_at, created_by,
+                    imap_uid
+             FROM drafts
+             WHERE status = 'draft'
+               AND send_after IS NOT NULL
+               AND datetime(send_after) <= datetime('now')
+             ORDER BY send_after ASC",
+        )?;
+
+        let rows = stmt.query_map([], Self::map_draft)?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     /// Store the IMAP UID assigned by the server after APPEND to the Drafts folder.
     pub fn update_draft_imap_uid(&self, id: &str, imap_uid: u32) -> Result<()> {
         self.conn().execute(

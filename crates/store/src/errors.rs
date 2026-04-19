@@ -28,6 +28,9 @@ pub enum StoreError {
 
     #[error("configuration error: {0}")]
     Config(String),
+
+    #[error("migration error: {0}")]
+    Migration(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;

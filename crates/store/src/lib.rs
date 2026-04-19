@@ -3,12 +3,15 @@
 
 pub mod accounts;
 pub mod action_log;
+pub mod contacts;
 pub mod credential_store;
 pub mod crypto;
 pub mod db;
 pub mod drafts;
 pub mod errors;
+pub mod events;
 pub mod license_store;
+pub mod migrations;
 pub mod models;
 pub mod rule_store;
 pub mod snoozed;

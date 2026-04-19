@@ -112,9 +112,9 @@ pub async fn serve_with_backend(
 
     info!("dashboard listening on http://localhost:{port}");
     println!("Envelope dashboard running at http://localhost:{port}");
-    println!("Background unsnooze sweep running every 60s");
+    println!("Background unsnooze + scheduled-send sweep running every 60s");
 
-    // Spawn background unsnooze ticker (checks every 60s for due snoozes)
+    // Spawn background ticker (checks every 60s for due snoozes and scheduled sends)
     tokio::spawn(async move {
         let ticker_state = state;
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -122,6 +122,9 @@ pub async fn serve_with_backend(
             interval.tick().await;
             if let Err(e) = run_unsnooze_sweep(&ticker_state).await {
                 tracing::warn!("unsnooze sweep error: {e}");
+            }
+            if let Err(e) = run_scheduled_send_sweep(&ticker_state).await {
+                tracing::warn!("scheduled send sweep error: {e}");
             }
         }
     });
@@ -199,6 +202,71 @@ async fn run_unsnooze_sweep(state: &AppState) -> anyhow::Result<()> {
                     msg.account
                 );
                 state.evict_imap(&msg.account).await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ── Background scheduled send sweep ─────────────────────────────────
+
+async fn run_scheduled_send_sweep(state: &AppState) -> anyhow::Result<()> {
+    let due = {
+        let db = state.db.lock().await;
+        db.list_drafts_due_for_send()
+            .map_err(|e| anyhow::anyhow!("db error: {e}"))?
+    };
+
+    if due.is_empty() {
+        return Ok(());
+    }
+
+    info!("scheduled send sweep: {} draft(s) due", due.len());
+
+    for draft in &due {
+        // Resolve credentials for the draft's account
+        let (client_arc, creds) = match state.get_or_create_imap(&draft.account_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    "scheduled send: failed to get credentials for {}: {e}",
+                    draft.account_id
+                );
+                continue;
+            }
+        };
+        // Drop the IMAP client lock — we only needed creds
+        drop(client_arc);
+
+        // Send via SMTP
+        let subject = draft.subject.as_deref().unwrap_or("");
+        match envelope_email_transport::SmtpSender::send_simple(
+            &creds,
+            &draft.to_addr,
+            subject,
+            draft.text_content.as_deref(),
+            draft.html_content.as_deref(),
+            draft.cc_addr.as_deref(),
+            draft.bcc_addr.as_deref(),
+            draft.reply_to.as_deref(),
+        )
+        .await
+        {
+            Ok(message_id) => {
+                let db = state.db.lock().await;
+                let _ = db.mark_draft_sent(&draft.id, Some(&message_id));
+                info!(
+                    "scheduled send: sent draft {} to {} ({})",
+                    draft.id, draft.to_addr, message_id
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "scheduled send: SMTP failed for draft {} to {}: {e}",
+                    draft.id,
+                    draft.to_addr
+                );
             }
         }
     }

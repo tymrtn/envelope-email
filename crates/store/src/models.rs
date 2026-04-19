@@ -357,3 +357,37 @@ pub struct Rule {
     pub created_at: String,
     pub updated_at: String,
 }
+
+// ── Events (v0.5.0) ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Event {
+    pub id: String,
+    pub account_id: String,
+    pub event_type: String,
+    pub folder: String,
+    pub uid: Option<i64>,
+    pub message_id: Option<String>,
+    pub from_addr: Option<String>,
+    pub subject: Option<String>,
+    pub snippet: Option<String>,
+    pub payload: Option<String>,
+    pub created_at: String,
+}
+
+// ── Contacts (v0.5.0) ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Contact {
+    pub id: String,
+    pub account_id: String,
+    pub email: String,
+    pub name: Option<String>,
+    pub tags: String,
+    pub notes: Option<String>,
+    pub message_count: i64,
+    pub first_seen: Option<String>,
+    pub last_seen: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}

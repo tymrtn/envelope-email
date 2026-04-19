@@ -32,7 +32,7 @@ fn validate_imap_input(s: &str) -> Result<(), ImapError> {
     Ok(())
 }
 
-type ImapSession = Session<TlsStream<TcpStream>>;
+pub type ImapSession = Session<TlsStream<TcpStream>>;
 
 /// IMAP client wrapping an authenticated async-imap session.
 pub struct ImapClient {

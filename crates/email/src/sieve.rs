@@ -126,8 +126,8 @@ fn expr_to_sieve(expr: &MatchExpr) -> Option<String> {
         MatchExpr::Not(inner) => {
             expr_to_sieve(inner).map(|s| format!("not {s}"))
         }
-        // Tags and scores can't be expressed in Sieve
-        MatchExpr::HasTag(_) | MatchExpr::ScoreAbove { .. } | MatchExpr::ScoreBelow { .. } => None,
+        // Tags, scores, and contact tags can't be expressed in Sieve
+        MatchExpr::HasTag(_) | MatchExpr::ScoreAbove { .. } | MatchExpr::ScoreBelow { .. } | MatchExpr::ContactHasTag(_) => None,
     }
 }
 
@@ -163,8 +163,8 @@ fn action_to_sieve<'a>(action: &Action, requires: &mut std::collections::HashSet
         Action::Delete => {
             Some("discard;".to_string())
         }
-        // Snooze, Unsubscribe, AddTag are local-only
-        Action::Snooze(_) | Action::Unsubscribe | Action::AddTag(_) => None,
+        // Snooze, Unsubscribe, AddTag, Webhook are local-only
+        Action::Snooze(_) | Action::Unsubscribe | Action::AddTag(_) | Action::Webhook(_) => None,
     }
 }
 

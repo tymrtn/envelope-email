@@ -31,7 +31,8 @@ fn parse_action(s: &str) -> Result<Action> {
             "unflag" => Ok(Action::Unflag(arg.to_string())),
             "snooze" => Ok(Action::Snooze(arg.to_string())),
             "add_tag" | "addtag" | "tag" => Ok(Action::AddTag(arg.to_string())),
-            _ => bail!("unknown action type '{kind}'. Use: move, flag, unflag, snooze, tag, delete, unsubscribe"),
+            "webhook" => Ok(Action::Webhook(arg.to_string())),
+            _ => bail!("unknown action type '{kind}'. Use: move, flag, unflag, snooze, tag, webhook, delete, unsubscribe"),
         }
     } else {
         match s.to_lowercase().as_str() {
@@ -70,12 +71,17 @@ fn build_message_context(
         HashMap::new()
     };
 
+    let contact_tags = db
+        .get_contact_tags(account_id, &msg.from_addr)
+        .context("failed to get contact tags")?;
+
     Ok(MessageContext {
         from_addr: msg.from_addr.clone(),
         to_addr: msg.to_addr.clone(),
         subject: msg.subject.clone(),
         tags,
         scores,
+        contact_tags,
     })
 }
 
@@ -89,6 +95,7 @@ pub fn run_create(
     match_tags: &[String],
     match_score_above: &[String],
     match_score_below: &[String],
+    match_contact_tags: &[String],
     action_str: &str,
     priority: i64,
     stop: bool,
@@ -118,6 +125,7 @@ pub fn run_create(
         match_tags,
         &score_above,
         &score_below,
+        match_contact_tags,
     );
     let match_expr_json =
         serde_json::to_string(&match_expr).context("failed to serialize match expression")?;
@@ -369,7 +377,7 @@ pub async fn run_apply(
             };
 
             // Execute the action
-            let action_result = execute_action(&mut client, &action, uid, folder).await;
+            let action_result = execute_action(&mut client, &action, uid, folder, Some(&rule.name), Some(&ctx)).await;
 
             match &action_result {
                 Ok(desc) => {
@@ -437,6 +445,8 @@ async fn execute_action(
     action: &Action,
     uid: u32,
     folder: &str,
+    rule_name: Option<&str>,
+    ctx: Option<&MessageContext>,
 ) -> Result<String> {
     match action {
         Action::Move(dest) => {
@@ -476,6 +486,33 @@ async fn execute_action(
         Action::Unsubscribe => {
             // Unsubscribe requires HTTP/SMTP; log as unsupported in batch.
             Ok("unsubscribe (use 'envelope unsubscribe' instead)".to_string())
+        }
+        Action::Webhook(url) => {
+            let payload = serde_json::json!({
+                "event": "rule_matched",
+                "rule": rule_name.unwrap_or("unknown"),
+                "uid": uid,
+                "folder": folder,
+                "message": {
+                    "from": ctx.map(|c| c.from_addr.as_str()).unwrap_or(""),
+                    "to": ctx.map(|c| c.to_addr.as_str()).unwrap_or(""),
+                    "subject": ctx.map(|c| c.subject.as_str()).unwrap_or(""),
+                }
+            });
+            let http = reqwest::Client::new();
+            let body = serde_json::to_vec(&payload)
+                .map_err(|e| anyhow::anyhow!("failed to serialize webhook payload: {e}"))?;
+            match http
+                .post(url.as_str())
+                .header("Content-Type", "application/json")
+                .body(body)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+            {
+                Ok(resp) => Ok(format!("webhook {url}: {}", resp.status())),
+                Err(e) => Err(anyhow::anyhow!("webhook {url} failed: {e}")),
+            }
         }
     }
 }

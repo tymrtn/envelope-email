@@ -27,6 +27,9 @@ lettre.workspace = true
 mail-parser.workspace = true
 mail-builder.workspace = true
 
+# Code extraction
+regex = "1"
+
 # Header encoding
 base64.workspace = true
 

@@ -7,8 +7,9 @@ use envelope_email_transport::SmtpSender;
 use envelope_email_transport::smtp::Attachment;
 
 use super::common::setup_credentials;
+use super::datetime::parse_until;
 
-/// Simple send — no attachments. Delegates to run_with_attachments with an empty slice.
+/// Send an email immediately, or schedule it for later with `--at`.
 #[tokio::main]
 pub async fn run(
     to: &str,
@@ -23,8 +24,55 @@ pub async fn run(
     account: Option<&str>,
     json: bool,
     backend: CredentialBackend,
+    at: Option<&str>,
 ) -> Result<()> {
-    let (_db, creds) = setup_credentials(account, backend)?;
+    let (db, creds) = setup_credentials(account, backend)?;
+
+    // ── Scheduled send path ──
+    if let Some(at_str) = at {
+        if !attach_paths.is_empty() {
+            anyhow::bail!("--attach is not supported with --at (scheduled send does not persist attachments yet)");
+        }
+        if from.is_some() {
+            anyhow::bail!("--from is not supported with --at (scheduled send does not persist sender override yet)");
+        }
+        let send_at = parse_until(at_str).context("failed to parse --at value")?;
+
+        // Create a draft with send_after set
+        let draft = db
+            .create_draft(
+                &creds.account.id,
+                to,
+                Some(subject),
+                body,
+                html,
+                None, // in_reply_to
+                cc,
+                bcc,
+                Some("cli"),
+            )
+            .context("failed to create scheduled draft")?;
+
+        db.update_draft_send_after(&draft.id, &send_at)
+            .context("failed to set send_after on draft")?;
+
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "scheduled": true,
+                    "send_at": send_at,
+                    "draft_id": draft.id,
+                })
+            );
+        } else {
+            println!("Scheduled for {send_at}. Draft ID: {}", draft.id);
+        }
+
+        return Ok(());
+    }
+
+    // ── Immediate send path (unchanged) ──
 
     // Load each --attach file into memory
     let mut attachments: Vec<Attachment> = Vec::with_capacity(attach_paths.len());

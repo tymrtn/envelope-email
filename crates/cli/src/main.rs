@@ -2,6 +2,7 @@
 // Licensed under FSL-1.1-ALv2 (see LICENSE)
 
 mod commands;
+mod mcp;
 
 use clap::{Parser, Subcommand};
 
@@ -40,11 +41,26 @@ use clap::{Parser, Subcommand};
   List folders with unread counts:
     envelope folders
 
-AGENT USAGE
+AGENT WORKFLOWS
+  Watch for new mail in real time (IMAP IDLE push):
+    envelope watch --json
+
+  Extract a verification code (blocks until code arrives):
+    CODE=$(envelope code --wait 60)
+
+  Schedule a send for business hours:
+    envelope send --to cto@example.com --subject "Report" --body "..." --at "monday 9am"
+
+  Import contacts from your inbox, then create a rule:
+    envelope contacts import --from-inbox
+    envelope rule create --name "VIP" --match-contact-tag vip --action flag=\\Flagged
+
+  Use Envelope as an MCP server (Claude Code, Cursor, Zed):
+    envelope mcp --config
+
   Every command supports --json for machine consumption:
     envelope inbox --json | jq '.[0].subject'
     envelope folders --json | jq '.[] | {name: .folder, unseen}'
-    envelope snooze list --json
 
 PROVIDERS
   Envelope auto-discovers IMAP/SMTP servers via DNS. Tested with:
@@ -149,6 +165,9 @@ enum Commands {
         /// Account ID or email
         #[arg(long)]
         account: Option<String>,
+        /// Schedule send for a future time (ISO 8601, relative, or natural like "monday 9am")
+        #[arg(long)]
+        at: Option<String>,
     },
 
     /// Move a message to another folder
@@ -267,6 +286,12 @@ enum Commands {
         account: Option<String>,
     },
 
+    /// Manage scheduled messages
+    Scheduled {
+        #[command(subcommand)]
+        subcommand: ScheduledCmd,
+    },
+
     /// View conversation threads
     Thread {
         #[command(subcommand)]
@@ -285,6 +310,12 @@ enum Commands {
         subcommand: RuleCmd,
     },
 
+    /// Manage contacts
+    Contacts {
+        #[command(subcommand)]
+        subcommand: ContactsCmd,
+    },
+
     /// Unsubscribe from a mailing list via List-Unsubscribe header
     Unsubscribe {
         /// Message UID
@@ -298,6 +329,45 @@ enum Commands {
         /// Actually execute the unsubscribe (default is dry-run)
         #[arg(long)]
         confirm: bool,
+    },
+
+    /// Poll for a verification/OTP code from a recent email
+    Code {
+        /// Account ID or email
+        #[arg(long)]
+        account: Option<String>,
+        /// Filter by sender domain or address (substring match)
+        #[arg(long)]
+        from: Option<String>,
+        /// Filter by subject (substring match)
+        #[arg(long)]
+        subject: Option<String>,
+        /// Seconds to wait before timing out
+        #[arg(long, default_value = "120")]
+        wait: u64,
+    },
+
+    /// Watch a folder for new messages via IMAP IDLE (push notifications)
+    Watch {
+        /// Account ID or email
+        #[arg(long)]
+        account: Option<String>,
+        /// IMAP folder to watch
+        #[arg(long, default_value = "INBOX")]
+        folder: String,
+        /// POST event JSON to this URL on each new message
+        #[arg(long)]
+        webhook: Option<String>,
+        /// Run mail rules against new messages (not yet implemented)
+        #[arg(long)]
+        run_rules: bool,
+    },
+
+    /// Start the MCP (Model Context Protocol) server over stdio
+    Mcp {
+        /// Print a ready-to-paste MCP config snippet and exit
+        #[arg(long)]
+        config: bool,
     },
 }
 
@@ -523,6 +593,24 @@ enum SnoozeCmd {
 }
 
 #[derive(Subcommand)]
+enum ScheduledCmd {
+    /// List scheduled messages
+    List {
+        /// Account ID or email
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Cancel a scheduled message
+    Cancel {
+        /// Draft ID
+        id: String,
+        /// Account ID or email
+        #[arg(long)]
+        account: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum ThreadCmd {
     /// Show the full conversation thread for a message UID
     Show {
@@ -625,7 +713,10 @@ enum RuleCmd {
         /// Score below threshold in key=value format (repeatable)
         #[arg(long)]
         match_score_below: Vec<String>,
-        /// Action: move=Folder, flag=name, unflag=name, delete, unsubscribe, tag=name
+        /// Require sender's contact to have this tag (repeatable)
+        #[arg(long)]
+        match_contact_tag: Vec<String>,
+        /// Action: move=Folder, flag=name, unflag=name, delete, unsubscribe, tag=name, webhook=url
         #[arg(long)]
         action: String,
         /// Priority (lower runs first)
@@ -699,6 +790,59 @@ enum RuleCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum ContactsCmd {
+    /// Add a contact
+    Add {
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        tag: Vec<String>,
+        #[arg(long)]
+        notes: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// List contacts
+    List {
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Show a contact by email
+    Show {
+        email: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Add a tag to a contact
+    Tag {
+        email: String,
+        #[arg(long)]
+        tag: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Remove a tag from a contact
+    Untag {
+        email: String,
+        #[arg(long)]
+        tag: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Import contacts from inbox senders
+    Import {
+        #[arg(long, default_value = "500")]
+        limit: u32,
+        #[arg(long)]
+        account: Option<String>,
+    },
+}
+
 fn main() {
     // Install the rustls crypto provider before any TLS connections are made.
     // Without this, rustls panics with "Could not automatically determine
@@ -754,6 +898,7 @@ fn main() {
             reply_to,
             attach,
             account,
+            at,
         } => commands::send::run(
             &to,
             &subject,
@@ -767,6 +912,7 @@ fn main() {
             account.as_deref(),
             cli.json,
             backend,
+            at.as_deref(),
         ),
 
         Commands::Move {
@@ -948,6 +1094,15 @@ fn main() {
             commands::snooze::run_check(account.as_deref(), cli.json, backend)
         }
 
+        Commands::Scheduled { subcommand } => match subcommand {
+            ScheduledCmd::List { account } => {
+                commands::scheduled::run_list(account.as_deref(), cli.json, backend)
+            }
+            ScheduledCmd::Cancel { id, account } => {
+                commands::scheduled::run_cancel(&id, account.as_deref(), cli.json)
+            }
+        },
+
         Commands::Thread { subcommand } => match subcommand {
             ThreadCmd::Show {
                 uid,
@@ -997,6 +1152,45 @@ fn main() {
             ),
         },
 
+        Commands::Contacts { subcommand } => match subcommand {
+            ContactsCmd::Add {
+                email,
+                name,
+                tag,
+                notes,
+                account,
+            } => commands::contacts::run_add(
+                &email,
+                name.as_deref(),
+                &tag,
+                notes.as_deref(),
+                account.as_deref(),
+                cli.json,
+                backend,
+            ),
+            ContactsCmd::List { tag, account } => {
+                commands::contacts::run_list(tag.as_deref(), account.as_deref(), cli.json, backend)
+            }
+            ContactsCmd::Show { email, account } => {
+                commands::contacts::run_show(&email, account.as_deref(), cli.json, backend)
+            }
+            ContactsCmd::Tag {
+                email,
+                tag,
+                account,
+            } => commands::contacts::run_tag(&email, &tag, account.as_deref(), cli.json, backend),
+            ContactsCmd::Untag {
+                email,
+                tag,
+                account,
+            } => {
+                commands::contacts::run_untag(&email, &tag, account.as_deref(), cli.json, backend)
+            }
+            ContactsCmd::Import { limit, account } => {
+                commands::contacts::run_import_inbox(limit, account.as_deref(), cli.json, backend)
+            }
+        },
+
         Commands::Rule { subcommand } => match subcommand {
             RuleCmd::Create {
                 name,
@@ -1006,6 +1200,7 @@ fn main() {
                 match_tag,
                 match_score_above,
                 match_score_below,
+                match_contact_tag,
                 action,
                 priority,
                 stop,
@@ -1018,6 +1213,7 @@ fn main() {
                 &match_tag,
                 &match_score_above,
                 &match_score_below,
+                &match_contact_tag,
                 &action,
                 priority,
                 stop,
@@ -1071,6 +1267,48 @@ fn main() {
             cli.json,
             backend,
         ),
+
+        Commands::Code {
+            account,
+            from,
+            subject,
+            wait,
+        } => commands::code::run(
+            account.as_deref(),
+            from.as_deref(),
+            subject.as_deref(),
+            wait,
+            cli.json,
+            backend,
+        ),
+
+        Commands::Watch {
+            account,
+            folder,
+            webhook,
+            run_rules,
+        } => commands::watch::run(
+            &folder,
+            account.as_deref(),
+            webhook.as_deref(),
+            run_rules,
+            cli.json,
+            backend,
+        ),
+
+        Commands::Mcp { config } => {
+            if config {
+                mcp::print_config();
+                Ok(())
+            } else {
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to create tokio runtime")
+                    .block_on(mcp::run(backend))
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            }
+        }
     };
 
     if let Err(e) = result {

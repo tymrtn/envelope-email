@@ -5,6 +5,68 @@ All notable changes to Envelope Email are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-04-19
+
+### Added
+
+- **IMAP IDLE event stream** — `envelope watch` opens a persistent
+  IMAP IDLE connection and emits JSON events on new mail in real time.
+  Supports stdout, webhook (`--webhook <url>`), and SQLite event storage.
+  Reconnects automatically on connection drop with exponential backoff.
+  25-minute IDLE cycle stays under RFC 2177's 29-minute server timeout.
+
+- **Verification code extraction** — `envelope code --wait 60` blocks
+  until a verification/OTP code arrives, extracts it from the message
+  body (regex patterns for explicit labels, OTP-style codes, HTML-prominent
+  numbers, and standalone digits), and prints it to stdout. Pipe-friendly:
+  `CODE=$(envelope code --wait 60)`. Filters by `--from` domain and
+  `--subject` pattern.
+
+- **MCP server** — `envelope mcp` starts a Model Context Protocol server
+  over stdio, exposing 12 tools: inbox, read, search, send, reply,
+  move_message, flag, folders, tag, contacts, accounts, and rule_run.
+  `envelope mcp --config` prints a ready-to-paste JSON config snippet
+  for Claude Code, Cursor, or Zed. Envelope is the only MCP email server
+  that works against any IMAP provider (Gmail, Outlook, Migadu, Fastmail,
+  self-hosted Dovecot).
+
+- **Scheduled send** — `envelope send --to ... --at "monday 9am"` creates
+  a draft with a scheduled send time. The `envelope serve` background
+  ticker sends due messages automatically. `envelope scheduled list` and
+  `envelope scheduled cancel <id>` manage the queue. Reuses the snooze
+  datetime parser (ISO 8601, relative offsets, natural language).
+
+- **Contacts** — `envelope contacts add/list/show/tag/untag/import`.
+  Local contact store in SQLite with freeform tags (JSON array). Tags
+  integrate with the rules engine: `--match-contact-tag vendor` creates
+  a rule that matches any message from a contact tagged "vendor".
+  `envelope contacts import --from-inbox` bootstraps the contacts table
+  from inbox senders.
+
+- **Webhook rule actions** — `envelope rule create --action webhook=<url>`
+  POSTs message context as JSON to the webhook URL when a rule matches.
+  10-second timeout, fire-and-forget. Enables integrating Envelope's
+  rules engine with external systems (n8n, Make, custom scripts).
+
+- **SQLite schema migrations** — Replaced hand-rolled `CREATE TABLE IF
+  NOT EXISTS` with `rusqlite_migration` (v1.3). Tracks schema version
+  via `PRAGMA user_version`. Existing databases upgrade seamlessly.
+  All v0.5.0 tables (events, contacts) are added as versioned migrations.
+
+- **Agent Workflows help section** — `envelope --help` now shows a
+  dedicated "Agent Workflows" section with copy-paste one-liners for
+  watch, code extraction, scheduled send, contacts import, and MCP setup.
+
+### Changed
+
+- Workspace version bumped to 0.5.0.
+- `regex` added as a dependency (for verification code extraction).
+- `rusqlite_migration` added as a dependency (schema versioning).
+- `ContactHasTag` added to the rules engine `MatchExpr` enum. Rules
+  can now match on the sender's contact tags, not just message-level tags.
+
+[0.5.0]: https://github.com/tymrtn/U1F4E7/releases/tag/v0.5.0
+
 ## [0.4.1] — 2026-04-19
 
 ### Fixed

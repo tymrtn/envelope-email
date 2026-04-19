@@ -1,9 +1,11 @@
 // Copyright (c) 2026 Tyler Martin
 // Licensed under FSL-1.1-ALv2 (see LICENSE)
 
+pub mod code_extractor;
 pub mod discovery;
 pub mod errors;
 pub mod folders;
+pub mod idle;
 pub mod imap;
 pub mod provider;
 pub mod reply;

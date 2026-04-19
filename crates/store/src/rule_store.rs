@@ -20,11 +20,12 @@ impl Database {
         let id = Uuid::new_v4().to_string();
 
         // Compute sieve_exportable: true if match_expr only uses from/to/subject
-        // (no tags, no scores). Simple heuristic: check if the JSON contains
-        // "has_tag" or "score_above" or "score_below".
+        // (no tags, no scores) and action is IMAP-native (no webhook/snooze/etc).
+        // Simple heuristic: check if the JSON contains non-exportable markers.
         let sieve_exportable = !match_expr.contains("has_tag")
             && !match_expr.contains("score_above")
-            && !match_expr.contains("score_below");
+            && !match_expr.contains("score_below")
+            && !action.contains("webhook");
 
         self.conn().execute(
             "INSERT INTO rules (id, account_id, name, match_expr, action, priority, stop, sieve_exportable)

@@ -34,6 +34,8 @@ pub enum MatchExpr {
     ScoreAbove { dimension: String, threshold: f64 },
     /// Score on `dimension` is below `threshold`.
     ScoreBelow { dimension: String, threshold: f64 },
+    /// Sender's contact record has this tag.
+    ContactHasTag(String),
     /// All sub-expressions must match.
     And(Vec<MatchExpr>),
     /// At least one sub-expression must match.
@@ -60,6 +62,8 @@ pub enum Action {
     Unsubscribe,
     /// Add a local tag (enables chained rules).
     AddTag(String),
+    /// POST message context as JSON to this URL when the rule matches.
+    Webhook(String),
 }
 
 /// Context about a message for rule evaluation.
@@ -73,6 +77,7 @@ pub struct MessageContext {
     pub subject: String,
     pub tags: Vec<String>,
     pub scores: HashMap<String, f64>,
+    pub contact_tags: Vec<String>,
 }
 
 /// Evaluate a match expression against a message context.
@@ -82,6 +87,7 @@ pub fn evaluate(expr: &MatchExpr, ctx: &MessageContext) -> bool {
         MatchExpr::To(pattern) => glob_match(pattern, &ctx.to_addr),
         MatchExpr::Subject(pattern) => glob_match(pattern, &ctx.subject),
         MatchExpr::HasTag(tag) => ctx.tags.iter().any(|t| t == tag),
+        MatchExpr::ContactHasTag(tag) => ctx.contact_tags.iter().any(|t| t == tag),
         MatchExpr::ScoreAbove {
             dimension,
             threshold,
@@ -149,6 +155,7 @@ pub fn build_match_expr(
     tags: &[String],
     score_above: &[(String, f64)],
     score_below: &[(String, f64)],
+    contact_tags: &[String],
 ) -> MatchExpr {
     let mut conditions: Vec<MatchExpr> = Vec::new();
 
@@ -176,6 +183,9 @@ pub fn build_match_expr(
             threshold: *val,
         });
     }
+    for ct in contact_tags {
+        conditions.push(MatchExpr::ContactHasTag(ct.clone()));
+    }
 
     match conditions.len() {
         0 => MatchExpr::And(vec![]), // matches nothing
@@ -195,6 +205,7 @@ mod tests {
             subject: subject.to_string(),
             tags: vec![],
             scores: HashMap::new(),
+            contact_tags: vec![],
         }
     }
 
@@ -205,6 +216,7 @@ mod tests {
             subject: String::new(),
             tags: tags.iter().map(|s| s.to_string()).collect(),
             scores: scores.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            contact_tags: vec![],
         }
     }
 
@@ -349,6 +361,7 @@ mod tests {
             &["automated".to_string()],
             &[("urgent".to_string(), 0.7)],
             &[],
+            &[],
         );
         // Should be And([From, HasTag, ScoreAbove])
         if let MatchExpr::And(conditions) = &expr {
@@ -360,7 +373,7 @@ mod tests {
 
     #[test]
     fn build_single_condition_unwraps() {
-        let expr = build_match_expr(Some("*@github.com"), None, None, &[], &[], &[]);
+        let expr = build_match_expr(Some("*@github.com"), None, None, &[], &[], &[], &[]);
         assert!(matches!(expr, MatchExpr::From(_)));
     }
 }

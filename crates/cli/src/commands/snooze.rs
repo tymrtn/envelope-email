@@ -2,104 +2,20 @@
 // Licensed under FSL-1.1-ALv2 (see LICENSE)
 
 use anyhow::{Context, Result, bail};
-use chrono::{Datelike, Duration, Local, NaiveDateTime, NaiveTime, Weekday};
+use chrono::Local;
 use envelope_email_store::Database;
 use envelope_email_store::credential_store::CredentialBackend;
 use envelope_email_transport::imap;
 use tracing::{info, warn};
 
 use super::common::{resolve_account, setup_credentials};
+use super::datetime::parse_until;
 
 /// The default IMAP folder name for snoozed messages.
 const IMAP_SNOOZED_FOLDER: &str = "Snoozed";
 
 /// Valid snooze reasons.
 const VALID_REASONS: &[&str] = &["follow-up", "waiting-reply", "defer", "reminder", "review"];
-
-/// Parse a flexible datetime string into an ISO8601 datetime.
-///
-/// Accepts:
-/// - ISO8601: "2026-03-30T09:00:00"
-/// - Relative: "2h", "3d", "1w", "30m"
-/// - Natural: "tomorrow", "monday", "tuesday", ..., "next week"
-fn parse_until(input: &str) -> Result<String> {
-    let trimmed = input.trim();
-    let now = Local::now();
-
-    // Try ISO8601 first
-    if let Ok(dt) = NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S") {
-        return Ok(dt.format("%Y-%m-%dT%H:%M:%S").to_string());
-    }
-
-    // Try relative: number + unit suffix
-    if trimmed.len() >= 2 {
-        let (num_part, unit) = trimmed.split_at(trimmed.len() - 1);
-        if let Ok(n) = num_part.parse::<i64>() {
-            let duration = match unit {
-                "m" => Duration::minutes(n),
-                "h" => Duration::hours(n),
-                "d" => Duration::days(n),
-                "w" => Duration::weeks(n),
-                _ => bail!("unknown time unit: '{unit}' (use m/h/d/w)"),
-            };
-            let target = now + duration;
-            return Ok(target.format("%Y-%m-%dT%H:%M:%S").to_string());
-        }
-    }
-
-    // Try natural language
-    let lower = trimmed.to_lowercase();
-    let morning = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
-
-    match lower.as_str() {
-        "tomorrow" => {
-            let target = (now + Duration::days(1)).date_naive().and_time(morning);
-            Ok(target.format("%Y-%m-%dT%H:%M:%S").to_string())
-        }
-        "next week" => {
-            // Next Monday at 09:00
-            let days_until_monday = (8 - now.weekday().num_days_from_monday()) % 7;
-            let days = if days_until_monday == 0 {
-                7
-            } else {
-                days_until_monday as i64
-            };
-            let target = (now + Duration::days(days)).date_naive().and_time(morning);
-            Ok(target.format("%Y-%m-%dT%H:%M:%S").to_string())
-        }
-        day_name => {
-            // Try parsing as a day of the week
-            let target_weekday = match day_name {
-                "monday" | "mon" => Some(Weekday::Mon),
-                "tuesday" | "tue" => Some(Weekday::Tue),
-                "wednesday" | "wed" => Some(Weekday::Wed),
-                "thursday" | "thu" => Some(Weekday::Thu),
-                "friday" | "fri" => Some(Weekday::Fri),
-                "saturday" | "sat" => Some(Weekday::Sat),
-                "sunday" | "sun" => Some(Weekday::Sun),
-                _ => None,
-            };
-
-            if let Some(wd) = target_weekday {
-                let current = now.weekday().num_days_from_monday();
-                let target = wd.num_days_from_monday();
-                let days = if target > current {
-                    (target - current) as i64
-                } else {
-                    (7 - current + target) as i64
-                };
-                let target_dt = (now + Duration::days(days)).date_naive().and_time(morning);
-                Ok(target_dt.format("%Y-%m-%dT%H:%M:%S").to_string())
-            } else {
-                bail!(
-                    "cannot parse '{trimmed}' as a datetime. \
-                     Use ISO8601 (2026-03-30T09:00:00), relative (2h, 3d, 1w), \
-                     or natural (tomorrow, monday, next week)"
-                )
-            }
-        }
-    }
-}
 
 /// Validate a snooze reason against the allowed set.
 fn validate_reason(reason: &str) -> Result<()> {
@@ -755,54 +671,6 @@ pub async fn run_check_replies(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_iso8601() {
-        let result = parse_until("2026-03-30T09:00:00").unwrap();
-        assert_eq!(result, "2026-03-30T09:00:00");
-    }
-
-    #[test]
-    fn parse_relative_hours() {
-        let result = parse_until("2h").unwrap();
-        // Should be roughly 2 hours from now — just verify it parses
-        assert!(result.contains("T"));
-    }
-
-    #[test]
-    fn parse_relative_days() {
-        let result = parse_until("3d").unwrap();
-        assert!(result.contains("T"));
-    }
-
-    #[test]
-    fn parse_relative_weeks() {
-        let result = parse_until("1w").unwrap();
-        assert!(result.contains("T"));
-    }
-
-    #[test]
-    fn parse_tomorrow() {
-        let result = parse_until("tomorrow").unwrap();
-        assert!(result.contains("T09:00:00"));
-    }
-
-    #[test]
-    fn parse_day_name() {
-        let result = parse_until("monday").unwrap();
-        assert!(result.contains("T09:00:00"));
-    }
-
-    #[test]
-    fn parse_next_week() {
-        let result = parse_until("next week").unwrap();
-        assert!(result.contains("T09:00:00"));
-    }
-
-    #[test]
-    fn parse_invalid() {
-        assert!(parse_until("banana").is_err());
-    }
 
     #[test]
     fn validate_reason_valid() {
