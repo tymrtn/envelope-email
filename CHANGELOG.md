@@ -5,6 +5,24 @@ All notable changes to Envelope Email are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-04-19
+
+### Fixed
+
+- Exposed `snooze check-replies` subcommand — was implemented but not
+  wired into the clap dispatch.
+- Dashboard compose handler updated for `from_override` parameter added
+  to `SmtpSender::send`.
+
+### Changed
+
+- Repo renamed from `tymrtn/envelope-email` to `tymrtn/U1F4E7`. Old URL
+  redirects. Brew tap moved to `tymrtn/homebrew-u1f4e7`
+  (`brew install tymrtn/u1f4e7/u1f4e7`). Python prototype archived at
+  `tymrtn/U1F4E7-python`.
+
+[0.4.1]: https://github.com/tymrtn/U1F4E7/releases/tag/v0.4.1
+
 ## [0.4.0] — 2026-04-14
 
 ### Added
