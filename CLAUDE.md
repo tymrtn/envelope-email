@@ -57,7 +57,7 @@ gets ignored.
 
 ## Repo & License
 
-- **GitHub:** [tymrtn/envelope-email](https://github.com/tymrtn/envelope-email) (the repo was renamed from `envelope-email-rs` to `envelope-email` before Apr 9 2026; old URL still redirects but use the new one in docs)
+- **GitHub:** [tymrtn/U1F4E7](https://github.com/tymrtn/U1F4E7) (the repo was renamed from `envelope-email-rs` to `envelope-email` before Apr 9 2026; old URL still redirects but use the new one in docs)
 - **License:** FSL-1.1-ALv2 (see LICENSE)
 - **Copyright:** 2026 Tyler Martin
 

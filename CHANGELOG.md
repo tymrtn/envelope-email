@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (was racing, causing "no account selected" in sidebar).
 - Folder error recovery with retry button on IMAP failures.
 
-[0.4.0]: https://github.com/tymrtn/envelope-email/releases/tag/v0.4.0
+[0.4.0]: https://github.com/tymrtn/U1F4E7/releases/tag/v0.4.0
 
 ## [0.3.0] — 2026-04-09
 
@@ -162,4 +162,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passing (40 store + 63 email + 10 dashboard), zero clippy warnings in
   new code, `ci/check-orphans.sh` clean.
 
-[0.3.0]: https://github.com/tymrtn/envelope-email/releases/tag/v0.3.0
+[0.3.0]: https://github.com/tymrtn/U1F4E7/releases/tag/v0.3.0

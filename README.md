@@ -19,11 +19,11 @@ Licensed under [FSL-1.1-ALv2](LICENSE).
 
 ```bash
 # Homebrew
-brew install tymrtn/envelope/u1f4e7
+brew install tymrtn/u1f4e7/u1f4e7
 
 # From source
-git clone https://github.com/tymrtn/envelope-email
-cd envelope-email
+git clone https://github.com/tymrtn/U1F4E7
+cd U1F4E7
 cargo build --release
 # binary: target/release/envelope
 ```
