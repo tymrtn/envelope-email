@@ -1,19 +1,36 @@
-# Envelope Email
+<p align="center">
+  <h1 align="center">📧 Envelope</h1>
+  <p align="center"><code>U+1F4E7</code> — if you know, you know.</p>
+  <p align="center"><strong>Email mastery for agents. Add your credentials, and go.</strong></p>
+</p>
 
-**BYO mailbox email client with agent-native primitives.** Turn any
-IMAP/SMTP account into a programmable email interface your agents can
-drive. Give it an email + password, it figures out the rest.
+> **Why U1F4E7?** It's the Unicode codepoint for 📧. Humans see a repo name. Agents see an envelope.
 
-Licensed under [FSL-1.1-ALv2](LICENSE).
+<p align="center">
+  <a href="#quick-start">Setup</a> •
+  <a href="#cli-reference">CLI</a> •
+  <a href="#rules-engine">Rules</a> •
+  <a href="#why-not-himalaya--cloudflare--resend">vs. Alternatives</a> •
+  <a href="#dashboard">Dashboard</a> •
+  <a href="LICENSE">License</a>
+</p>
 
-## Why
+<p align="center">
+  <img src="https://img.shields.io/badge/rust-stable-blue.svg" alt="Rust">
+  <img src="https://img.shields.io/badge/version-0.4.1-green.svg" alt="v0.4.1">
+  <img src="https://img.shields.io/badge/license-FSL--1.1--ALv2-green.svg" alt="License: FSL-1.1-ALv2">
+</p>
 
-- **One command**: `envelope accounts add --email you@example.com --password ...` — no manual host/port/TLS wrangling.
-- **Auto-discovery**: SRV → MX → common patterns → TCP probe. Knows Gmail, Outlook/Office 365, Microsoft Workmail, Migadu, Fastmail, self-hosted Dovecot, generic IMAP.
-- **Agent-native**: every command supports `--json`. Pipe to `jq`, feed to an LLM, whatever.
-- **Batteries included**: snooze, threading, reply/reply-all, attachments, drafts, search. Ships with a local dashboard at [http://localhost:3141](http://localhost:3141).
-- **Rules engine**: agents score messages, create rules, and Envelope enforces them deterministically. Junk filters your LLM builds, not you.
-- **Email mastery for agents**: one tool, total control over the mailbox.
+---
+
+Your agent needs to manage email. You shouldn't need to configure DNS records, set up a new domain, or pay per-message fees to make that happen.
+
+**Envelope: add your email address and password. That's it. Your agent reads, sends, replies, snoozes, tags, and filters email — from your existing mailbox.**
+
+```bash
+envelope accounts add --email you@gmail.com --password <app-password>
+envelope inbox --json
+```
 
 ## Install
 
@@ -34,204 +51,181 @@ cargo build --release
 # Add an account — Envelope auto-discovers IMAP/SMTP from the email domain
 envelope accounts add --email you@gmail.com --password <app-password>
 
-# List accounts
-envelope accounts list --json | jq '.[] | .username'
-
-# See folders with unread/total counts
+# See folders with unread counts
 envelope folders
 
 # Read the inbox
 envelope inbox --limit 20
 
-# Read a single message
+# Read a message (does not mark it as read)
 envelope read 42
 
-# Send an email with a PDF attachment
-envelope send \
-  --to recipient@example.com \
-  --subject "Q2 report" \
-  --body "Attached." \
-  --attach ~/reports/q2.pdf
+# Send with attachment
+envelope send --to someone@example.com --subject "Report" --body "Attached." --attach report.pdf
 
-# Snooze a message until Monday morning
+# Reply
+envelope send --to sender@example.com --subject "Re: Report" --body "Thanks."
+
+# Snooze until Monday
 envelope snooze set 42 --until monday --reason waiting-reply
 
-# Check for any snoozes that should return now
-envelope unsnooze --once
+# Agent scores a message, creates a rule, Envelope enforces it forever
+envelope tag set 42 --score urgent=0.1 --tag newsletter
+envelope rule create --name "Junk newsletters" --match-tag newsletter --match-score-below interesting=0.3 --action move=Junk
+envelope rule run
 
-# Open the local dashboard (inbox, read, compose, reply, drafts, snooze)
+# Unsubscribe from a mailing list (dry-run by default)
+envelope unsubscribe 99
+
+# Open the local dashboard
 envelope serve
-# → http://localhost:3141
 ```
+
+## Why not Himalaya / Cloudflare / Resend?
+
+### vs. Himalaya
+
+Himalaya is a great CLI email client. Envelope is a CLI email client built for agents.
+
+| | Envelope | Himalaya |
+|---|:---:|:---:|
+| Compose / Reply / Forward | ✅ | ✅ |
+| Inbox / Search / Folders | ✅ | ✅ |
+| Move / Copy / Delete / Flag | ✅ | ✅ |
+| Attachments (send + download) | ✅ | ✅ |
+| JSON output | ✅ | ✅ |
+| Multiple accounts | ✅ | ✅ |
+| Auto-discovery (email + password, done) | ✅ | ❌ Manual config |
+| Snooze + unsnooze | ✅ | ❌ |
+| Threading (11-language subject normalization) | ✅ | ❌ |
+| Rules engine (agent-trained junk filters) | ✅ | ❌ |
+| Message scoring + tagging | ✅ | ❌ |
+| Unsubscribe (RFC 8058 one-click) | ✅ | ❌ |
+| Sieve export | ✅ | ❌ |
+| Localhost dashboard (web UI) | ✅ | ❌ |
+
+### vs. Cloudflare Email Service
+
+Cloudflare's [Email Service](https://blog.cloudflare.com/email-for-agents/) (public beta, April 2026) is email infrastructure for the Cloudflare platform. Envelope is email mastery for your existing mailbox.
+
+| | Envelope | Cloudflare Email |
+|---|:---:|:---:|
+| BYO mailbox (your existing email) | ✅ | ❌ Cloudflare routing |
+| DNS setup required | **None** | Cloudflare DNS |
+| Read inbox (full IMAP) | ✅ | ❌ Inbound routing only |
+| Self-hosted | ✅ | ❌ Workers platform |
+| Per-message cost | **$0** | Paid Workers plan |
+| Agent-native | ✅ CLI + JSON | ✅ Workers SDK |
+| Rules engine | ✅ Local + Sieve | Workers AI |
+| Works offline | ✅ | ❌ Cloud-only |
+| Any provider | ✅ Gmail, Outlook, Migadu, any IMAP | ❌ Cloudflare only |
+| Open source | ✅ FSL-1.1-ALv2 | Reference app only |
+
+### vs. Resend / Mailgun / SendGrid
+
+| | Envelope | Resend | Mailgun | SendGrid |
+|---|:---:|:---:|:---:|:---:|
+| BYO mailbox | ✅ Your existing email | ❌ New domain | ❌ New domain | ❌ New domain |
+| DNS setup | **None** | SPF/DKIM/DMARC | SPF/DKIM/DMARC | SPF/DKIM/DMARC |
+| Per-message cost | **$0** | $0.001+ | $0.001+ | $0.001+ |
+| Read inbox | ✅ Full IMAP | ❌ Send only | ⚠️ Limited | ⚠️ Limited |
+| Self-hosted | ✅ | ❌ | ❌ | ❌ |
+| Open source | ✅ | ❌ | ❌ | ❌ |
 
 ## Provider support
 
-Envelope discovers IMAP/SMTP server endpoints via DNS (SRV → MX → common
-patterns). Once connected, it detects the provider type from folder
-layout and resolves canonical folder names (`drafts`, `sent`, `trash`,
-`spam`, `archive`) to the actual IMAP names your provider uses.
+Envelope auto-discovers IMAP/SMTP from your email domain via DNS. Tested with:
 
 | Provider | Auth | Notes |
 |---|---|---|
-| **Gmail** | App password | Folders use `[Gmail]/` prefix (`[Gmail]/Drafts`, `[Gmail]/Sent Mail`, `[Gmail]/Trash`). |
-| **Outlook.com / Office 365** | App password | Exchange IMAP quirks handled (`Deleted Items`, `Junk E-mail`). |
-| **Microsoft Workmail** | App password | Same Exchange-style folder names. |
-| **Migadu** | Password | Standard folder names (`Drafts`, `Sent`, `Trash`). |
-| **Fastmail** | App password | Standard folder names. |
-| **Self-hosted Dovecot** | Password | `INBOX.` dot-separator namespace detected automatically. |
-| **Generic IMAP** | Password | Anything conforming to RFC 3501. |
+| **Gmail** | App password | `[Gmail]/` folder prefix handled automatically |
+| **Outlook.com / Office 365** | App password | Exchange IMAP quirks handled |
+| **Microsoft Workmail** | App password | Exchange-style folders |
+| **Migadu** | Password | Standard folders |
+| **Fastmail** | App password | Standard folders |
+| **Self-hosted Dovecot** | Password | `INBOX.` dot-separator detected |
+| **Generic IMAP** | Password | Anything RFC 3501 |
 
-OAuth flows (for providers that require them) are not supported in
-v0.3.0 — use an app password or provider-specific password. OAuth support
-is on the v0.4 roadmap.
+## Rules engine
+
+The agent is the intelligence. Envelope is the execution.
+
+```bash
+# 1. Agent reads inbox and scores each message
+envelope inbox --json | jq -r '.[].uid' | while read uid; do
+  envelope tag set "$uid" --score urgent=0.1 --score interesting=0.2 --tag newsletter
+done
+
+# 2. Agent creates rules from observed patterns
+envelope rule create --name "Junk newsletters" \
+  --match-tag newsletter --match-score-below interesting=0.3 \
+  --action move=Junk
+
+# 3. Rules execute forever — no LLM needed
+envelope rule run
+
+# 4. Export to Sieve for server-side filtering
+envelope rule export
+```
+
+The LLM teaches Envelope what to look for. Envelope applies those patterns deterministically. The LLM only re-engages when something new appears.
 
 ## Dashboard
 
-`envelope serve` starts a localhost-only web UI on port 3141.
-The dashboard talks to the same IMAP/SMTP code as the CLI.
+`envelope serve` starts a localhost web UI at [http://localhost:3141](http://localhost:3141).
 
-**Features:**
-
-- Account switcher, stats strip (accounts / snoozed / drafts)
 - Folder sidebar with live unread counts
-- Inbox list with sender / subject / date columns
-- Message reader with sandboxed HTML body rendering
-- Reply / Reply-all with automatic header threading (`In-Reply-To`, `References`)
+- Inbox list with message reader
+- Reply / Reply-all with automatic header threading
 - Compose with text/html toggle and file attachments
-- ★ Snoozed virtual folder with overdue highlighting and one-click unsnooze
-- IMAP search (any IMAP SEARCH query: `FROM alice`, `SUBJECT invoice`, etc.)
-
-**Security:**
-
-- Binds to `127.0.0.1` only — not reachable from other machines
-- CORS locked to `http://localhost:*` / `http://127.0.0.1:*` origins
-- HTML email bodies render inside a `<iframe sandbox="">` (no scripts, no same-origin, no forms)
-- No authentication — relies on the OS user boundary. Don't `envelope serve` on a shared box.
+- ★ Snoozed virtual folder with overdue highlighting
+- IMAP search
 
 ## CLI reference
 
 | Command | Description |
 |---|---|
-| `envelope accounts add/list/remove` | Manage accounts (add auto-discovers hosts) |
-| `envelope folders [--json]` | List folders with unread/total counts |
-| `envelope inbox [--folder INBOX] [--limit N]` | List messages |
-| `envelope read <uid> [--folder INBOX]` | Read a single message (uses IMAP BODY.PEEK — does not auto-mark read) |
-| `envelope search "<query>" [--folder INBOX]` | IMAP search |
-| `envelope send --to <addr> --subject <s> --body <b> [--attach <path>]` | Send |
-| `envelope move <uid> --to-folder <name>` | Move a message |
-| `envelope copy <uid> --to-folder <name>` | Copy a message |
-| `envelope delete <uid>` | Delete a message |
-| `envelope flag add/remove <uid> <flag>` | Manage IMAP flags |
-| `envelope attachment list/download <uid>` | List or download attachments |
-| `envelope draft create/list/send/discard` | Draft management (IMAP-backed) |
-| `envelope snooze set <uid> --until <time>` | Move a message to the Snoozed folder and record a return time |
-| `envelope snooze list` | List snoozed messages |
-| `envelope snooze cancel <uid>` | Unsnooze immediately |
-| `envelope unsnooze [--once]` | Sweep the snooze queue and return messages whose time has come |
-| `envelope thread show <uid>` | Show the full conversation thread |
-| `envelope thread list` | List recent threads |
-| `envelope thread build` | Build / refresh the thread index from IMAP |
-| `envelope serve [--port 3141]` | Start the localhost dashboard |
-| `envelope tag set <uid> --score urgent=0.9 --tag newsletter` | Score and tag a message |
-| `envelope tag show <uid>` | Show tags and scores for a message |
-| `envelope tag list --tag newsletter --min-score urgent=0.7` | Filter messages by tags/scores |
-| `envelope rule create --name "..." --match-from "..." --action move=Junk` | Create a mail rule |
-| `envelope rule list` | List all rules |
-| `envelope rule test <uid>` | Dry-run rules against a message |
-| `envelope rule run` | Batch-apply rules to the inbox |
-| `envelope rule enable/disable/delete <name>` | Rule lifecycle |
-| `envelope rule export` | Export rules as a Sieve script |
-| `envelope unsubscribe <uid> [--confirm]` | Unsubscribe via List-Unsubscribe header (dry-run by default) |
+| `envelope accounts add/list/remove` | Manage accounts (auto-discovers hosts) |
+| `envelope folders` | List folders with unread/total counts |
+| `envelope inbox [--folder] [--limit]` | List messages |
+| `envelope read <uid>` | Read a message (BODY.PEEK — no auto-mark-read) |
+| `envelope search "<query>"` | IMAP search |
+| `envelope send --to --subject --body [--attach]` | Send email |
+| `envelope move/copy/delete <uid>` | Message management |
+| `envelope flag add/remove <uid> <flag>` | IMAP flags |
+| `envelope attachment list/download <uid>` | Attachments |
+| `envelope draft create/list/send/discard` | Drafts (IMAP-backed) |
+| `envelope snooze set/list/cancel` | Snooze with flexible time parsing |
+| `envelope unsnooze [--once]` | Return due snoozed messages |
+| `envelope thread show/list/build` | Conversation threads |
+| `envelope tag set/show/list` | Score and tag messages |
+| `envelope rule create/list/test/run/export` | Mail rules |
+| `envelope unsubscribe <uid> [--confirm]` | List-Unsubscribe (dry-run default) |
+| `envelope serve` | Localhost dashboard |
 
-### Rules engine
+Every command supports `--json` for agent consumption.
 
-Agents score messages, create rules, and Envelope enforces them:
+## Architecture
 
-```bash
-# 1. Agent scores a message
-envelope tag set 42 --score urgent=0.1 --score interesting=0.2 --tag newsletter
-
-# 2. Agent creates a rule
-envelope rule create \
-  --name "Low-value newsletters" \
-  --match-tag newsletter \
-  --match-score-below interesting=0.3 \
-  --action move=Junk
-
-# 3. Dry-run to verify
-envelope rule test 42 --json
-
-# 4. Apply
-envelope rule run
-
-# 5. Export to Sieve for server-side filtering
-envelope rule export --account tyler@example.com
 ```
-
-### `--until` time format for snooze
-
-- **ISO 8601:** `2026-04-15T09:00:00`
-- **Relative:** `2h`, `3d`, `1w`, `30m`
-- **Natural:** `tomorrow`, `monday`, `tuesday`, …, `next week`
-
-### JSON output
-
-Every command supports `--json` for agent consumption:
-
-```bash
-envelope inbox --json | jq '.[] | select(.subject | contains("invoice"))'
-envelope folders --json | jq '.[] | {name, unseen}'
-envelope snooze list --json
-```
-
-## Credentials
-
-Envelope encrypts stored passwords with AES-256-GCM in
-`~/.config/envelope-email/envelope.db`. Two backends:
-
-- **file** (default): master passphrase from `ENVELOPE_MASTER_KEY` env var,
-  or a machine-specific seed (hostname + username). Works on headless
-  Linux, locked-screen macOS, servers — zero external dependencies.
-- **keychain** (opt-in): OS keychain via the `keyring` crate. Enable with
-  `--credential-store keychain`. Use for interactive desktop setups.
-
-## Agent integration
-
-Envelope is designed for agentic users. Every command outputs JSON, the
-CLI has no interactive prompts (all inputs are flags), and operations
-are idempotent where possible. Typical patterns:
-
-```bash
-# Check for urgent mail
-envelope inbox --json | jq '[.[] | select(.from_addr | contains("@boss.co"))]'
-
-# Auto-snooze low-priority notifications
-for uid in $(envelope search "FROM notifications@" --json | jq -r '.[].uid'); do
-  envelope snooze set "$uid" --until "+3d" --reason defer
-done
-
-# Sweep due snoozes (cron-friendly)
-envelope unsnooze --once
+┌──────────────┐     ┌────────────────────────────┐     ┌──────────────┐
+│  AI Agent    │────▶│        Envelope (Rust)      │────▶│  Your SMTP   │
+│              │     │                              │     │  (Gmail,     │
+│  CLI / JSON  │     │  crates/cli       binary     │     │   Migadu,    │
+│              │◀────│  crates/email     IMAP/SMTP  │◀────│   Fastmail)  │
+│              │     │  crates/store     SQLite      │     │              │
+│              │     │  crates/dashboard web UI      │     │  IMAP/SMTP   │
+└──────────────┘     └────────────────────────────┘     └──────────────┘
 ```
 
 ## Development
 
 ```bash
-cargo build           # Build all crates
-cargo build --release # Optimized release binary
-cargo test            # Run the test suite (113 tests, 0 failures)
-cargo clippy          # Lint
-./ci/check-orphans.sh # Verify every .rs file is reachable via `mod`
-```
-
-The repo has four crates:
-
-```
-crates/
-├── cli/       # The `envelope` binary (clap-based)
-├── email/     # IMAP client, SMTP sender, discovery, threading, reply headers
-├── store/     # SQLite persistence, AES-GCM credential encryption
-└── dashboard/ # Axum localhost web UI with embedded static assets (rust-embed)
+cargo build                # Build all crates
+cargo build --release      # Optimized release binary
+cargo test                 # 167 tests, 0 failures
+cargo clippy               # Lint
+./ci/check-orphans.sh      # Verify every .rs file is reachable via mod
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for per-release notes.
@@ -242,3 +236,10 @@ See [CHANGELOG.md](CHANGELOG.md) for per-release notes.
 no competing services. Becomes Apache 2.0 two years after each release.
 
 Copyright © 2026 Tyler Martin.
+
+---
+
+<p align="center">
+  <strong>Built by <a href="https://github.com/tymrtn">Tyler Martin</a></strong><br>
+  <em>Your agent shouldn't need a $50/month Resend plan to send an email.</em>
+</p>
