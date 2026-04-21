@@ -69,6 +69,19 @@ envelope send --to sender@example.com --subject "Re: Report" --body "Thanks."
 # Snooze until Monday
 envelope snooze set 42 --until monday --reason waiting-reply
 
+# Watch for new mail in real time (IMAP IDLE push)
+envelope watch --json
+
+# Extract a verification code (blocks until it arrives)
+CODE=$(envelope code --wait 60)
+
+# Schedule a send for business hours
+envelope send --to cto@example.com --subject "Report" --body "..." --at "monday 9am"
+
+# Import contacts from your inbox, then create a contact-based rule
+envelope contacts import --from-inbox
+envelope rule create --name "VIP" --match-contact-tag vip --action flag=\\Flagged
+
 # Agent scores a message, creates a rule, Envelope enforces it forever
 envelope tag set 42 --score urgent=0.1 --tag newsletter
 envelope rule create --name "Junk newsletters" --match-tag newsletter --match-score-below interesting=0.3 --action move=Junk
@@ -102,6 +115,12 @@ Himalaya is a great CLI email client. Envelope is a CLI email client built for a
 | Message scoring + tagging | ✅ | ❌ |
 | Unsubscribe (RFC 8058 one-click) | ✅ | ❌ |
 | Sieve export | ✅ | ❌ |
+| IMAP IDLE push (`envelope watch`) | ✅ | ❌ |
+| Verification code extraction | ✅ | ❌ |
+| MCP server (Claude Code, Cursor, Zed) | ✅ | ❌ |
+| Scheduled send (`--at`) | ✅ | ❌ |
+| Contacts with rules integration | ✅ | ❌ |
+| Webhook rule actions | ✅ | ❌ |
 | Localhost dashboard (web UI) | ✅ | ❌ |
 
 ### vs. Cloudflare Email Service
@@ -145,6 +164,27 @@ Envelope auto-discovers IMAP/SMTP from your email domain via DNS. Tested with:
 | **Fastmail** | App password | Standard folders |
 | **Self-hosted Dovecot** | Password | `INBOX.` dot-separator detected |
 | **Generic IMAP** | Password | Anything RFC 3501 |
+
+## MCP server
+
+`envelope mcp` starts a Model Context Protocol server over stdio — drop-in email for Claude Code, Cursor, Zed, or any MCP runtime.
+
+```bash
+# Print a ready-to-paste config snippet
+envelope mcp --config
+
+# Output (paste into your MCP config):
+# {
+#   "mcpServers": {
+#     "envelope": {
+#       "command": "/path/to/envelope",
+#       "args": ["mcp"]
+#     }
+#   }
+# }
+```
+
+11 tools: `inbox`, `read`, `search`, `send`, `reply`, `move_message`, `flag`, `folders`, `tag`, `contacts`, `accounts`. Envelope is the only MCP email server that works against any IMAP provider.
 
 ## Rules engine
 
@@ -199,8 +239,14 @@ The LLM teaches Envelope what to look for. Envelope applies those patterns deter
 | `envelope unsnooze [--once]` | Return due snoozed messages |
 | `envelope thread show/list/build` | Conversation threads |
 | `envelope tag set/show/list` | Score and tag messages |
-| `envelope rule create/list/test/run/export` | Mail rules |
+| `envelope rule create/list/test/run/export` | Mail rules (webhook actions supported) |
 | `envelope unsubscribe <uid> [--confirm]` | List-Unsubscribe (dry-run default) |
+| `envelope watch [--webhook] [--json]` | IMAP IDLE push — real-time new mail events |
+| `envelope code [--from] [--wait 120]` | Extract verification/OTP codes from email |
+| `envelope mcp [--config]` | MCP server (stdio) for Claude Code, Cursor, Zed |
+| `envelope send --at "monday 9am"` | Scheduled send with flexible datetime |
+| `envelope scheduled list/cancel` | Manage scheduled messages |
+| `envelope contacts add/list/show/tag/import` | Contact store with rules integration |
 | `envelope serve` | Localhost dashboard |
 
 Every command supports `--json` for agent consumption.
@@ -223,7 +269,7 @@ Every command supports `--json` for agent consumption.
 ```bash
 cargo build                # Build all crates
 cargo build --release      # Optimized release binary
-cargo test                 # 167 tests, 0 failures
+cargo test                 # 194 tests, 0 failures
 cargo clippy               # Lint
 ./ci/check-orphans.sh      # Verify every .rs file is reachable via mod
 ```
