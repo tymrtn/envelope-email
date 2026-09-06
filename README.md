@@ -87,8 +87,8 @@ envelope snooze set 42 --until monday --reason waiting-reply
 # Watch for new mail in real time (IMAP IDLE push)
 envelope watch --json
 
-# Extract a verification code (blocks until it arrives)
-CODE=$(envelope code --wait 60)
+# Retrieve a verification-code JSON result for unattended automation (bounded and fail-closed)
+envelope --json code --account you@example.com --from otp@issuer.example --wait 60
 
 # Schedule a send for business hours
 envelope send --to cto@example.com --subject "Report" --body "..." --at "monday 9am"
@@ -425,7 +425,7 @@ Thread inclusion is driven only by `Message-ID`, `In-Reply-To`, and `References`
 | `envelope evidence collect/verify` | Query-scoped RFC822 evidence bundle with offline verification |
 | `envelope unsubscribe <uid> [--confirm]` | List-Unsubscribe (dry-run default) |
 | `envelope watch [--webhook] [--json]` | IMAP IDLE push — real-time new mail events |
-| `envelope code [--from] [--wait 120]` | Extract verification/OTP codes from email |
+| `envelope code [--from] [--wait 120]` | Extract verification/OTP codes; `--json` automation requires `--account` plus an exact mailbox/full-domain `--from` binding and stabilizes before returning |
 | `envelope paths` | Show resolved database/credential paths and HOME drift warnings |
 | `envelope contract [--surface <name>]` | Export the versioned agent JSON/MCP contract |
 | `envelope mcp [--config]` | MCP server (stdio) for Claude Code, Cursor, Zed |

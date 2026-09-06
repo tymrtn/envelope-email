@@ -1,6 +1,6 @@
 # Envelope Agent Contract
 
-Envelope exposes a versioned agent contract as `envelope.agent_contract.v2`.
+Envelope exposes a versioned agent contract as `envelope.agent_contract.v3`.
 
 Generate the live contract:
 
@@ -17,13 +17,21 @@ envelope contract --surface inbox
 The checked-in schema snapshot is:
 
 ```text
-docs/schemas/envelope.agent_contract.v2.json
+docs/schemas/envelope.agent_contract.v3.json
 ```
 
-The prior `envelope.agent_contract.v1` snapshot is retained unchanged at
-`docs/schemas/envelope.agent_contract.v1.json` as historical documentation.
+The prior `envelope.agent_contract.v2` snapshot is retained unchanged at
+`docs/schemas/envelope.agent_contract.v2.json` as historical documentation.
 
-## v2 migration (breaking)
+## v3 migration (breaking)
+
+v3 is a breaking contract change for unattended OTP retrieval:
+
+- **Bound OTP JSON automation.** `envelope code --json` now **requires** `--account` for the expected mailbox and `--from` as an exact mailbox address or fully-qualified domain. It rejects missing, empty, wildcard, display-name, and fragment sender filters with `error: "automation_binding_required"` before credentials or IMAP are opened. A subject filter may add correlation but cannot replace the account/sender binding.
+- **Stabilized, ambiguity-safe result.** JSON collection continues for a fixed 5-second stabilization window after the first candidate and includes candidates found in subsequent polls. More than one candidate returns `{error:"ambiguous_matches", candidate_count}` and exits nonzero; a timeout before the window completes returns `{error:"timeout", waited_seconds}` and never releases the first candidate.
+- **Header identity is not authentication.** Returned `from` and `subject` are untrusted inbound header/content fields accompanied by the `trust` block. Envelope makes no claim that the sender is authenticated. Interactive non-JSON `envelope code` remains a low-friction legacy convenience and does not offer this JSON automation guarantee.
+
+## v2 migration (historical)
 
 v2 is a breaking contract change for the outbound send surfaces:
 
@@ -36,19 +44,19 @@ v2 is a breaking contract change for the outbound send surfaces:
 - **`mailto:` unsubscribe is attribution-gated.** The `mailto:` compliance unsubscribe is a real SMTP surface, so `envelope unsubscribe` accepts repeatable `--attr` keys and **requires** a non-empty valid declaration before Governor/SMTP; a missing/invalid declaration fails closed with the canonical attribution error (no wire send). HTTPS one-click unsubscribe is not an SMTP send and is unaffected.
 - **Additive success `attribution` block.** Every **successful** outbound result (immediate `send`/`reply`/`send_draft`, queued/scheduled acceptance, and the `mailto:` unsubscribe) carries an additive sanitized `attribution` object: `protocol`, `catalog`, `catalog_version`, `attribution_state`, `declared_attrs`, `derived_attrs`, `governor_attrs`, `accepted_redundant`, `rejected_attrs`, and a `governor` sub-object `{decision, route}` — `null` on queued/scheduled acceptance, where `governor_decision_pending` marks that the real decision runs at the sweep. It never contains a score, weight, threshold, body, raw recipient, secret, or attachment byte. New optional field, backward-compatible.
 - Generic `{code, reason}` error handling is unaffected; the `governor_blocked` and `governor_unavailable` codes and their meanings are unchanged (with an additive `route ∈ {review, deny}`).
-- **Inbound trust/provenance (additive).** CLI, MCP, watch and webhook JSON carrying inbound mail expose `trust.schema = "envelope.inbound-trust.v1"`, `origin = "external_inbound_email"`, `content_role = "untrusted_data"`, and `instructions_authoritative = false`. Existing fields remain for compatibility. Webhook events additionally duplicate attacker-controlled subject/snippet/payload under `untrusted_content`; ordinary external mail remains a normal event. Reply/forward drafts split `content.segments` into `agent_authored` and explicitly untrusted `external_quoted_context`. OTP sender filters are exact mailbox or full-domain comparisons; multiple matching codes in one poll return `ambiguous_matches` rather than selecting by arrival order. Relationship facts use curated contacts and outbound-confirmed correspondence only; inbound-only messages and header-only links do not create favorable facts.
+- **Inbound trust/provenance (additive).** CLI, MCP, watch and webhook JSON carrying inbound mail expose `trust.schema = "envelope.inbound-trust.v1"`, `origin = "external_inbound_email"`, `content_role = "untrusted_data"`, and `instructions_authoritative = false`. Existing fields remain for compatibility. Webhook events additionally duplicate attacker-controlled subject/snippet/payload under `untrusted_content`; ordinary external mail remains a normal event. Reply/forward drafts split `content.segments` into `agent_authored` and explicitly untrusted `external_quoted_context`. **OTP JSON automation** requires an explicit `--account` plus `--from` as an exact mailbox address or fully-qualified domain; empty, display-name, wildcard, or fragment sender inputs return `error: "automation_binding_required"` before credentials or IMAP are opened. It collects all matching candidates for a fixed 5-second stabilization window across polling iterations and fails closed with `{error:"ambiguous_matches", candidate_count}` if more than one arrives. A timeout before that window completes returns `{error:"timeout", waited_seconds}`. `from` and `subject` are untrusted message header/content fields, **not authenticated sender identity**. Interactive non-JSON `code` output remains a low-friction legacy convenience and does not provide the JSON automation collection guarantee. Relationship facts use curated contacts and outbound-confirmed correspondence only; inbound-only messages and header-only links do not create favorable facts.
 
 ## Compatibility rules
 
-- Existing command `--json` output shapes are not changed by the contract export (except the deliberate v2 score removal noted above).
-- Optional additions are compatible within `envelope.agent_contract.v2`.
+- Existing command `--json` output shapes are not changed by the contract export except for documented breaking migrations (v2 outbound attribution and v3 OTP JSON binding/stabilization).
+- Optional additions are compatible within `envelope.agent_contract.v3`.
 - Draft/reply/forward creation and draft edits support optional `--attach` paths. Attachment bytes are snapshotted into draft storage for review/send continuity, but contract/JSON output exposes only non-secret summaries (`filename`, `content_type`, `size`). Draft edits also support removing named attachments or clearing all attachments. Forwarding original source-message attachments is explicit via `draft forward --include-attachments`; it is not the default.
 - Removals, renames, required-field changes, or type changes require a new schema id.
 - MCP tool input schemas are derived from `crates/cli/src/commands/contract.rs` so CLI, MCP, Hermes, and Codex advertise the same surface.
 
 ## Surfaces
 
-The v1 contract covers:
+The v3 contract covers:
 
 - inbox
 - read
@@ -238,7 +246,7 @@ The `evidence` surface is read-only against source mailboxes (IMAP `EXAMINE` + `
 After intentional contract changes:
 
 ```bash
-cargo run -q -p envelope-email -- contract > docs/schemas/envelope.agent_contract.v1.json
-python3 -m json.tool docs/schemas/envelope.agent_contract.v1.json >/dev/null
-cargo test -p envelope-email contract -- --nocapture
+cargo run -q -p envelope-email -- contract > docs/schemas/envelope.agent_contract.v3.json
+python3 -m json.tool docs/schemas/envelope.agent_contract.v3.json >/dev/null
+cargo test -p envelope-email --test contract_drift
 ```
