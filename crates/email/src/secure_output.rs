@@ -3,10 +3,13 @@
 
 //! Descriptor-relative output helpers for hostile export destinations.
 //!
-//! Paths are resolved one component at a time below an already-open directory.
-//! This prevents a check-then-use symlink swap from redirecting an evidence
-//! export. Files are published with `linkat` rather than a replacing rename, so
-//! an existing output (including a symlink) is never overwritten.
+//! The existing prefix of an operator-selected output root is canonicalized
+//! once, which permits macOS's `/tmp` and `/var` system aliases. Every missing
+//! component below that physical root is then opened through a retained
+//! descriptor with `O_NOFOLLOW`. This prevents a check-then-use symlink swap
+//! from redirecting an evidence export. Files are published with `linkat`
+//! rather than a replacing rename, so an existing output (including a symlink)
+//! is never overwritten.
 
 #[cfg(unix)]
 use std::ffi::CString;
@@ -31,36 +34,19 @@ pub(crate) struct SecureOutputDir {
 impl SecureOutputDir {
     /// Open `path`, creating missing components without ever following one.
     pub(crate) fn open_or_create(path: &Path) -> io::Result<Self> {
-        let mut dir = match path.components().next() {
-            Some(Component::RootDir) => Self::open_initial(b"/")?,
-            _ => Self::open_initial(b".")?,
-        };
-        for component in path.components() {
-            match component {
-                Component::RootDir | Component::CurDir => {}
-                Component::Normal(name) => dir = dir.open_or_create_child_os(name)?,
-                Component::ParentDir => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "output path must not contain parent components",
-                    ));
-                }
-                Component::Prefix(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "unsupported output path prefix",
-                    ));
-                }
-            }
+        validate_output_path(path)?;
+        let (physical_root, descendants) = canonical_existing_prefix(path)?;
+        let mut dir = Self::open_initial(physical_root.as_os_str().as_bytes())?;
+        for name in descendants {
+            dir = dir.open_or_create_child_os(&name)?;
         }
         Ok(dir)
     }
 
     fn open_initial(name: &[u8]) -> io::Result<Self> {
         let name = cstring(name)?;
-        // `.` is resolved by the kernel from the already-selected working
-        // directory. All caller-controlled components below it use openat with
-        // O_NOFOLLOW.
+        // This is the one canonical physical-prefix open. Every remaining
+        // caller-controlled component uses openat with O_NOFOLLOW.
         let fd = unsafe {
             libc::open(
                 name.as_ptr(),
@@ -199,6 +185,78 @@ impl SecureOutputDir {
 }
 
 #[cfg(unix)]
+fn validate_output_path(path: &Path) -> io::Result<()> {
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir | Component::Normal(_) => {}
+            Component::ParentDir => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "output path must not contain parent components",
+                ));
+            }
+            Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unsupported output path prefix",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the existing part of a selected output root exactly once. The last
+/// existing component itself must not be a symlink: missing descendants are
+/// created descriptor-relatively below it, so an untrusted link cannot become a
+/// traversal boundary. Canonicalizing the physical prefix permits macOS system
+/// aliases such as `/tmp -> /private/tmp` before a directory descriptor exists.
+#[cfg(unix)]
+fn canonical_existing_prefix(
+    path: &Path,
+) -> io::Result<(std::path::PathBuf, Vec<std::ffi::OsString>)> {
+    let mut candidate = if path.as_os_str().is_empty() {
+        Path::new(".").to_path_buf()
+    } else {
+        path.to_path_buf()
+    };
+    let mut descendants = Vec::new();
+
+    loop {
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "output path existing prefix must not be a symlink",
+                ));
+            }
+            Ok(_) => {
+                let physical_root = std::fs::canonicalize(&candidate)?;
+                descendants.reverse();
+                return Ok((physical_root, descendants));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+
+        let name = candidate.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "output path has no existing directory prefix",
+            )
+        })?;
+        descendants.push(name.to_os_string());
+        candidate = candidate
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        if candidate.as_os_str().is_empty() {
+            candidate = Path::new(".").to_path_buf();
+        }
+    }
+}
+
+#[cfg(unix)]
 fn cstring(bytes: &[u8]) -> io::Result<CString> {
     CString::new(bytes)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))
@@ -306,6 +364,21 @@ mod tests {
         assert_eq!(
             fs::read(out.path().join("manifest.json.tmp")).unwrap(),
             b"stale temp"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn opens_an_ordinary_tempdir_below_a_system_root_alias() {
+        let out = tempfile::tempdir().unwrap();
+        let dir = SecureOutputDir::open_or_create(&out.path().join("bundle")).unwrap();
+
+        dir.write_new_atomic("manifest.json", b"canonical evidence")
+            .unwrap();
+
+        assert_eq!(
+            fs::read(out.path().join("bundle/manifest.json")).unwrap(),
+            b"canonical evidence"
         );
     }
 }

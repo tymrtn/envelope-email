@@ -2435,6 +2435,21 @@ mod tests {
         assert!(!outside.path().join("bundle").exists());
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundle_export_accepts_an_ordinary_tempdir_below_system_root_aliases() {
+        let out = tempfile::tempdir().unwrap();
+        let bundle = out.path().join("evidence-bundle");
+        let manifest = write_sample_bundle(&bundle);
+
+        let outcome = verify_bundle(&bundle, true).unwrap();
+        assert!(outcome.ok);
+        assert_eq!(
+            outcome.manifest_message_count,
+            manifest.messages.len() as u32
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn verify_rejects_symlinked_evidence_eml_without_following() {
@@ -2614,6 +2629,32 @@ mod tests {
         let note = fs::read_to_string(msg_dir.join(ATTACHMENT_SOURCE_NOTE_FILE)).unwrap();
         assert!(note.contains("UID: 1391"));
         assert!(note.contains("complaint.docx"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn attachment_export_accepts_an_ordinary_tempdir_below_system_root_aliases() {
+        let out = tempfile::tempdir().unwrap();
+        let rfc822 =
+            build_message_with_attachment("evidence.txt", b"canonical attachment", "text/plain");
+
+        let (source, written) = export_all(out.path(), &rfc822, false);
+
+        assert_eq!(written.len(), 1);
+        assert_eq!(
+            fs::read(out.path().join(&written[0].attachment_rel_path)).unwrap(),
+            b"canonical attachment"
+        );
+        assert!(
+            out.path()
+                .join(attachment_message_dir(
+                    &source.folder,
+                    source.uidvalidity,
+                    source.uid
+                ))
+                .join(ATTACHMENT_PROVENANCE_FILE)
+                .is_file()
+        );
     }
 
     #[test]
