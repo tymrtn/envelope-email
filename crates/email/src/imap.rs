@@ -17,6 +17,7 @@ use tokio_rustls::client::TlsStream;
 use tracing::{debug, info, warn};
 
 use crate::errors::ImapError;
+use crate::ingress;
 
 /// Reject strings containing characters that could be used for IMAP command injection.
 pub fn validate_imap_input(s: &str) -> Result<(), ImapError> {
@@ -138,6 +139,13 @@ pub struct RawMessage {
     pub internal_date: Option<DateTime<FixedOffset>>,
     pub size: u32,
     pub rfc822: Vec<u8>,
+}
+
+/// RFC822.SIZE obtained before fetching an untrusted raw message body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawMessageSize {
+    pub uid: u32,
+    pub size: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -771,6 +779,8 @@ pub async fn fetch_message(
         .map_err(|e| ImapError::Protocol(format!("SELECT {folder}: {e}")))?;
 
     let uid_range = format!("{uid}");
+    let expected_sizes =
+        preflight_raw_message_sizes_selected_uid_set(client, folder, &uid_range).await?;
     let messages = client
         .session
         .uid_fetch(&uid_range, FETCH_MESSAGE_DESCRIPTOR)
@@ -783,7 +793,19 @@ pub async fn fetch_message(
         return Ok(None);
     };
     let fetch = item.map_err(|e| ImapError::Protocol(format!("UID FETCH parse error: {e}")))?;
-    let body: &[u8] = fetch.body().unwrap_or_default();
+    let fetched_uid = fetch
+        .uid
+        .ok_or_else(|| ImapError::Protocol("UID FETCH returned message without UID".into()))?;
+    if fetched_uid != uid {
+        return Err(ImapError::Protocol(format!(
+            "UID FETCH {uid} returned unexpected UID {fetched_uid}"
+        )));
+    }
+    let expected_size = expected_raw_message_size(&expected_sizes, fetched_uid)?;
+    let body = fetch
+        .body()
+        .ok_or_else(|| missing_body_protocol_error(folder, &uid_range, Some(fetched_uid)))?;
+    validate_raw_message_body_size(fetched_uid, expected_size, body)?;
     let Some(parsed) = mail_parser::MessageParser::default().parse(body) else {
         return Ok(None);
     };
@@ -814,12 +836,13 @@ pub async fn fetch_message(
             let ct: Option<&mail_parser::ContentType> = a.content_type();
             AttachmentMeta {
                 filename: a.attachment_name().unwrap_or("unnamed").to_string(),
-                content_type: ct
-                    .map(|ct| {
+                content_type: ingress::normalize_content_type(
+                    &ct.map(|ct| {
                         let subtype = ct.subtype().unwrap_or("octet-stream");
                         format!("{}/{subtype}", ct.ctype())
                     })
                     .unwrap_or_else(|| "application/octet-stream".to_string()),
+                ),
                 size: a.len() as u64,
                 content_id: a.content_id().map(|s: &str| s.to_string()),
             }
@@ -994,10 +1017,68 @@ pub async fn list_selected_uids(client: &mut ImapClient) -> Result<Vec<u32>, Ima
 }
 
 /// Fetch a batch of raw messages from the currently selected folder.
+///
+/// Every body fetch is preceded by RFC822.SIZE. Servers that omit a declared
+/// size are refused rather than causing an unbounded allocation.
+pub async fn preflight_raw_message_sizes_selected_uid_set(
+    client: &mut ImapClient,
+    folder: &str,
+    uid_set: &str,
+) -> Result<Vec<RawMessageSize>, ImapError> {
+    validate_imap_input(folder)?;
+    validate_uid_set(uid_set)?;
+    let messages = client
+        .session
+        .uid_fetch(uid_set, "(UID RFC822.SIZE)")
+        .await
+        .map_err(|e| ImapError::Protocol(format!("UID FETCH size {folder} {uid_set}: {e}")))?;
+    let mut sizes = Vec::new();
+    let mut stream = messages;
+    while let Some(item) = stream.next().await {
+        let fetch =
+            item.map_err(|e| ImapError::Protocol(format!("UID FETCH size parse error: {e}")))?;
+        let uid = fetch.uid.ok_or_else(|| {
+            ImapError::Protocol("UID FETCH size response without UID".to_string())
+        })?;
+        let size = fetch.size.ok_or_else(|| {
+            ImapError::Protocol(format!(
+                "attachment/message fetch refused for UID {uid}: server omitted RFC822.SIZE"
+            ))
+        })?;
+        ingress::validate_rfc822_size(size).map_err(|reason| {
+            ImapError::Protocol(format!(
+                "attachment/message fetch refused for UID {uid}: {reason}"
+            ))
+        })?;
+        sizes.push(RawMessageSize { uid, size });
+    }
+    Ok(sizes)
+}
+
+/// Fetch a batch of raw messages from the currently selected folder.
+///
+/// Every body fetch is preceded by RFC822.SIZE. Servers that omit a declared
+/// size are refused rather than causing an unbounded allocation.
 pub async fn fetch_raw_messages_selected_uid_set(
     client: &mut ImapClient,
     folder: &str,
     uid_set: &str,
+) -> Result<Vec<RawMessage>, ImapError> {
+    validate_imap_input(folder)?;
+    validate_uid_set(uid_set)?;
+    let expected_sizes =
+        preflight_raw_message_sizes_selected_uid_set(client, folder, uid_set).await?;
+    fetch_raw_messages_selected_uid_set_preflighted(client, folder, uid_set, &expected_sizes).await
+}
+
+/// Fetch a batch after the caller has already obtained and bounded its exact
+/// RFC822.SIZE values. Evidence collection uses this to cap the aggregate before
+/// any raw body fetch, without issuing a second size preflight.
+pub async fn fetch_raw_messages_selected_uid_set_preflighted(
+    client: &mut ImapClient,
+    folder: &str,
+    uid_set: &str,
+    expected_sizes: &[RawMessageSize],
 ) -> Result<Vec<RawMessage>, ImapError> {
     validate_imap_input(folder)?;
     validate_uid_set(uid_set)?;
@@ -1017,17 +1098,65 @@ pub async fn fetch_raw_messages_selected_uid_set(
         let body = fetch
             .body()
             .ok_or_else(|| missing_body_protocol_error(folder, uid_set, Some(uid)))?;
+        let expected_size = expected_raw_message_size(expected_sizes, uid)?;
+        validate_raw_message_body_size(uid, expected_size, body)?;
+        if let Some(response_size) = fetch.size
+            && response_size != expected_size
+        {
+            return Err(ImapError::Protocol(format!(
+                "UID FETCH size changed for UID {uid}: preflight {expected_size}, body response {response_size}"
+            )));
+        }
         let parsed = mail_parser::MessageParser::default().parse(body);
         out.push(RawMessage {
             uid,
             message_id: parsed.and_then(|m| m.message_id().map(|s| s.to_string())),
             flags: fetch.flags().map(|f| format!("{f:?}")).collect(),
             internal_date: fetch.internal_date(),
-            size: fetch.size.unwrap_or(body.len() as u32),
+            size: expected_size,
             rfc822: body.to_vec(),
         });
     }
     Ok(out)
+}
+
+fn expected_raw_message_size(
+    expected_sizes: &[RawMessageSize],
+    uid: u32,
+) -> Result<u32, ImapError> {
+    expected_sizes
+        .iter()
+        .find(|size| size.uid == uid)
+        .map(|size| size.size)
+        .ok_or_else(|| {
+            ImapError::Protocol(format!(
+                "UID FETCH returned UID {uid} that was absent from RFC822.SIZE preflight"
+            ))
+        })
+}
+
+/// Verify that a raw body exactly matches its preflight metadata before a MIME
+/// parser or evidence writer sees it. A size declaration is not merely a hint:
+/// accepting a truncated or changed body would make raw evidence dishonest.
+fn validate_raw_message_body_size(
+    uid: u32,
+    expected_size: u32,
+    body: &[u8],
+) -> Result<(), ImapError> {
+    let actual_size = u32::try_from(body.len()).map_err(|_| {
+        ImapError::Protocol(format!(
+            "UID FETCH body for UID {uid} exceeds the RFC822.SIZE representable range"
+        ))
+    })?;
+    ingress::validate_rfc822_size(actual_size).map_err(|reason| {
+        ImapError::Protocol(format!("UID FETCH body refused for UID {uid}: {reason}"))
+    })?;
+    if actual_size != expected_size {
+        return Err(ImapError::Protocol(format!(
+            "UID FETCH body size mismatch for UID {uid}: preflight {expected_size}, received {actual_size}"
+        )));
+    }
+    Ok(())
 }
 
 /// Build a protocol error for a UID FETCH response that has no `BODY.PEEK[]`
@@ -1863,6 +1992,8 @@ pub async fn download_attachment(
         .map_err(|e| ImapError::Protocol(format!("SELECT {folder}: {e}")))?;
 
     let uid_range = format!("{uid}");
+    let expected_sizes =
+        preflight_raw_message_sizes_selected_uid_set(client, folder, &uid_range).await?;
     let messages = client
         .session
         .uid_fetch(&uid_range, "(UID BODY.PEEK[])")
@@ -1874,7 +2005,19 @@ pub async fn download_attachment(
         return Err(ImapError::NotFound(uid));
     };
     let fetch = item.map_err(|e| ImapError::Protocol(format!("UID FETCH parse error: {e}")))?;
-    let body: &[u8] = fetch.body().unwrap_or_default();
+    let fetched_uid = fetch
+        .uid
+        .ok_or_else(|| ImapError::Protocol("UID FETCH returned message without UID".into()))?;
+    if fetched_uid != uid {
+        return Err(ImapError::Protocol(format!(
+            "UID FETCH {uid} returned unexpected UID {fetched_uid}"
+        )));
+    }
+    let expected_size = expected_raw_message_size(&expected_sizes, fetched_uid)?;
+    let body = fetch
+        .body()
+        .ok_or_else(|| missing_body_protocol_error(folder, &uid_range, Some(fetched_uid)))?;
+    validate_raw_message_body_size(fetched_uid, expected_size, body)?;
     let parsed = mail_parser::MessageParser::default()
         .parse(body)
         .ok_or_else(|| ImapError::Protocol(format!("failed to parse message UID {uid}")))?;
@@ -1885,6 +2028,12 @@ pub async fn download_attachment(
             .unwrap_or("unnamed")
             .to_string();
         if att_name == filename {
+            ingress::validate_attachment_size(attachment.len()).map_err(|reason| {
+                ImapError::Protocol(format!(
+                    "attachment fetch refused for UID {uid}: decoded attachment {:?}: {reason}",
+                    att_name
+                ))
+            })?;
             return Ok((att_name, attachment.contents().to_vec()));
         }
     }
@@ -2273,6 +2422,18 @@ Subject: hi\r\n\r\nbody\r\n";
         assert!(
             msg.contains("unknown UID"),
             "expected unknown-uid placeholder: {msg}"
+        );
+    }
+
+    #[test]
+    fn raw_body_size_must_match_the_preflight_exactly() {
+        assert!(validate_raw_message_body_size(42, 3, b"abc").is_ok());
+        let err = validate_raw_message_body_size(42, 4, b"abc").unwrap_err();
+        assert!(err.to_string().contains("size mismatch"));
+        let err = expected_raw_message_size(&[RawMessageSize { uid: 1, size: 3 }], 42).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("absent from RFC822.SIZE preflight")
         );
     }
 

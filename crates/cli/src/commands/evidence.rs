@@ -18,7 +18,7 @@ use envelope_email_transport::evidence::{
     EvidenceMessageRecord, EvidenceQueryFilters, EvidenceStats, EvidenceWarning,
     SourceStoreProvenance, ThreadExpansionMode,
 };
-use envelope_email_transport::{imap, migrate, provider};
+use envelope_email_transport::{imap, ingress, migrate, provider};
 
 use super::common::setup_credentials;
 use super::paths;
@@ -527,15 +527,53 @@ async fn fetch_raw_uids(
     folder: &str,
     uids: &[u32],
 ) -> Result<HashMap<u32, imap::RawMessage>> {
+    fetch_raw_uids_with_starting_total(client, folder, uids, 0, "evidence collection").await
+}
+
+/// Preflight every selected raw message before any body fetch, so the evidence
+/// cap is a hard admission check rather than a best-effort total after bytes
+/// have already been allocated or written.
+async fn fetch_raw_uids_with_starting_total(
+    client: &mut imap::ImapClient,
+    folder: &str,
+    uids: &[u32],
+    mut declared_total: u64,
+    operation: &str,
+) -> Result<HashMap<u32, imap::RawMessage>> {
     let mut sorted = uids.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
-    let mut out = HashMap::new();
-    if sorted.is_empty() {
-        return Ok(out);
+    let batches = migrate::uid_sequence_set_batches(&sorted, migrate::DEFAULT_BATCH_SIZE);
+    let mut preflighted = Vec::with_capacity(batches.len());
+    for uid_set in batches {
+        let sizes =
+            imap::preflight_raw_message_sizes_selected_uid_set(client, folder, &uid_set).await?;
+        for size in &sizes {
+            declared_total = declared_total
+                .checked_add(u64::from(size.size))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{operation} refused before raw fetch: declared RFC822 byte total overflow"
+                    )
+                })?;
+            if declared_total > ingress::MAX_EVIDENCE_TOTAL_BYTES {
+                bail!(
+                    "{operation} refused before raw fetch: declared RFC822 bytes exceed {} (last UID {}, {} bytes)",
+                    ingress::MAX_EVIDENCE_TOTAL_BYTES,
+                    size.uid,
+                    size.size
+                );
+            }
+        }
+        preflighted.push((uid_set, sizes));
     }
-    for uid_set in migrate::uid_sequence_set_batches(&sorted, migrate::DEFAULT_BATCH_SIZE) {
-        for raw in imap::fetch_raw_messages_selected_uid_set(client, folder, &uid_set).await? {
+
+    let mut out = HashMap::new();
+    for (uid_set, sizes) in preflighted {
+        for raw in
+            imap::fetch_raw_messages_selected_uid_set_preflighted(client, folder, &uid_set, &sizes)
+                .await?
+        {
             out.insert(raw.uid, raw);
         }
     }
@@ -553,7 +591,18 @@ async fn fetch_missing_raw_uids(
         .copied()
         .filter(|uid| !raw_by_uid.contains_key(uid))
         .collect();
-    let fetched = fetch_raw_uids(client, folder, &missing).await?;
+    let declared_total = raw_by_uid
+        .values()
+        .try_fold(0u64, |total, raw| total.checked_add(u64::from(raw.size)))
+        .ok_or_else(|| anyhow::anyhow!("evidence thread expansion raw byte total overflow"))?;
+    let fetched = fetch_raw_uids_with_starting_total(
+        client,
+        folder,
+        &missing,
+        declared_total,
+        "evidence thread expansion",
+    )
+    .await?;
     let mut fetched_uids = Vec::new();
     for (uid, raw) in fetched {
         fetched_uids.push(uid);
