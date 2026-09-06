@@ -70,10 +70,9 @@ pub fn agent_contract() -> Value {
                 "denial_code": "immediate_send_requires_confirmation"
             },
             "governor_gate": {
-                "modes": ["required", "warn", "off"],
-                "default": "required",
-                "env": {"mode": "ENVELOPE_GOVERNOR_MODE", "bin": "ENVELOPE_GOVERNOR_BIN"},
-                "behavior": "Before any real SMTP send (immediate bypass, scheduled-send sweep, and the `mailto:` compliance unsubscribe), the actual Governor decision engine is consulted using blind attribution: Envelope declares the contextual attribute keys the send exhibits and Governor opaquely scores/routes them against the 'envelope' catalog (allow/review/deny). Envelope never reproduces Governor's weights or thresholds. The scheduled-send sweep re-derives the final host facts from the persisted draft AND loads the declaration the bot validated at queue time, resolves declared ∪ derived, and calls Governor only when attribution is valid; a bot-originated draft with no valid current declaration fails closed there even when the derived set is rich (host facts never substitute). Durable review/deny verdicts park the draft as pending_review (no retry storm) while transient gate failures leave it queued. In required mode the Governor verdict fails closed: missing/error/deny/review all block the send; only an explicit allow permits SMTP. In warn mode a Governor verdict is recorded but does not block — BUT the attribution precondition still fails closed (see attribution.rule): a missing/invalid declaration on a bot-originated send is refused in warn exactly as in required. off skips the gate and the attribution requirement.",
+                "smtp_mode": "required",
+                "operator_configuration": "SMTP-capable CLI, MCP, scheduled-send, and dashboard processes always invoke the trusted absolute Governor executable in required mode. Caller-controlled environment variables cannot select warn/off or a different executable. If that executable is unavailable, SMTP fails closed. Diagnostic testing may construct an explicit in-memory gate configuration only when it is not wired to SMTP.",
+                "behavior": "Before any real SMTP send (immediate bypass, scheduled-send sweep, and the `mailto:` compliance unsubscribe), the actual Governor decision engine is consulted using blind attribution: Envelope declares the contextual attribute keys the send exhibits and Governor opaquely scores/routes them against the 'envelope' catalog (allow/review/deny). Envelope never reproduces Governor's weights or thresholds. The scheduled-send sweep re-derives the final host facts from the persisted draft AND loads the declaration the bot validated at queue time, resolves declared ∪ derived, and calls Governor only when attribution is valid; a bot-originated draft with no valid current declaration fails closed there even when the derived set is rich (host facts never substitute). Durable review/deny verdicts park the draft as pending_review (no retry storm) while transient gate failures leave it queued. Missing/error/deny/review all block SMTP; only an explicit allow permits it. The existing dashboard Human-only Send action remains a separately attested human boundary and is not an agent/configuration bypass.",
                 "block_status": "blocked",
                 "block_code": "governor_blocked",
                 "unavailable_code": "governor_unavailable",
@@ -84,7 +83,7 @@ pub fn agent_contract() -> Value {
                 "attribution": {
                     "protocol": "envelope.attribution.v1",
                     "catalog": "envelope",
-                    "rule": "Every bot-originated governed send MUST contain at least one factual declared attribute; host-derived facts never substitute. The attribution precondition fails closed in required and warn modes ALIKE — warn softens only a Governor verdict on an already-attributed send, never the attribution requirement, so a missing/invalid declaration is refused in warn exactly as in required. Only off disables the gate and the requirement. Human approval SUPPLEMENTS a bot send (it adds the tyler_approved attestation to the derived set) but never erases the bot's declaration responsibility.",
+                    "rule": "Every bot-originated governed send MUST contain at least one factual declared attribute; host-derived facts never substitute. The attribution precondition fails closed for all SMTP-capable Envelope processes; no caller-controlled environment setting can waive it. Human approval SUPPLEMENTS a bot send (it adds the tyler_approved attestation to the derived set) but never erases the bot's declaration responsibility.",
                     "sets": ["declared_attrs", "derived_attrs", "governor_attrs", "rejected_attrs", "accepted_redundant"],
                     "codes": {
                         "top_level": ["attributes_required", "attributes_invalid"],
@@ -122,15 +121,17 @@ pub fn agent_contract() -> Value {
         },
         "agent_identity": {
             "env": "ENVELOPE_AGENT_TOKEN",
-            "semantics": "When ENVELOPE_AGENT_TOKEN is set for an MCP server process, Envelope resolves it to a stored agent identity and enforces that agent's policy on every tool call. An unset token runs the MCP server anonymously with unchanged defaults; a set-but-unknown/revoked token fails MCP startup loud (never falls back to anonymous). The raw token is shown exactly once at `envelope agent create` and is never stored, logged, or recoverable.",
+            "anonymous_compatibility": "MCP startup requires ENVELOPE_AGENT_TOKEN. Legacy anonymous full-mailbox MCP is disabled by default and is available only when an operator explicitly sets ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS=1; generated MCP configuration never sets this unsafe override.",
+            "semantics": "Envelope resolves ENVELOPE_AGENT_TOKEN to a stored agent identity and enforces that agent's policy on every tool call. An unset/blank token fails MCP startup; a set-but-unknown/revoked token also fails startup and never falls back to anonymous. The raw token is shown exactly once at `envelope agent create` and is never stored, logged, or recoverable.",
             "policy_enforcement": {
-                "authorize": "Every MCP tool call is authorized before dispatch. The action is derived from the tool name (see tool_action_map); an unknown tool is denied. The account is the resolved `account` param (verbatim, case-sensitive; defaults to the configured default account id when omitted); the folder is checked when the tool selects one. Deny-by-default: an empty allow-list denies, a single \"*\" allows all.",
+                "authorize": "Every identity-bound MCP tool call is authorized before dispatch against an authoritative resolved account, never a caller-provided account spelling. Draft resources resolve account ownership from the persisted draft id and reject a mismatched optional account. Aggregate diagnostics (accounts, watch_status, and account-omitted snooze listing) fail closed for identity-bound sessions rather than authorizing a default account then reading other accounts. The folder is checked when the tool selects one. Deny-by-default: an empty allow-list denies, a single \"*\" allows all.",
                 "send_mode_clamp": "send/reply/send_draft requests are clamped down to the agent's send_mode_ceiling and never widened. Under a draft-only ceiling an autonomous request still produces only a draft.",
                 "attribution": "Mutating tool calls (send/reply/send_draft, move_message, flag, tag) and their send-policy/Governor audit rows are attributed to the acting agent id (audit-only; attribution never widens a decision).",
                 "denial_codes": [
                     "agent_policy_denied_action",
                     "agent_policy_denied_account",
-                    "agent_policy_denied_folder"
+                    "agent_policy_denied_folder",
+                    "agent_policy_account_required"
                 ],
                 "denial_shape": "Denials return the stable {code, reason} object as a normal MCP tool error and never include recipient addresses, account secrets, or body content."
             },
@@ -1304,7 +1305,9 @@ mod tests {
             safety["actual_send_cooldown"]["denial_code"],
             json!("immediate_send_requires_confirmation")
         );
-        assert_eq!(safety["governor_gate"]["default"], json!("required"));
+        assert_eq!(safety["governor_gate"]["smtp_mode"], json!("required"));
+        assert!(safety["governor_gate"].get("env").is_none());
+        assert!(safety["governor_gate"].get("modes").is_none());
         assert_eq!(
             safety["governor_gate"]["block_code"],
             json!("governor_blocked")

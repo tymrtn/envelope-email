@@ -17,6 +17,10 @@ fn run_cli(home: &std::path::Path, args: &[&str], token: Option<&str>) -> std::p
     cmd.args(args).env("HOME", home).env("ENVELOPE_HOME", home);
     if let Some(t) = token {
         cmd.env("ENVELOPE_AGENT_TOKEN", t);
+    } else {
+        // Test-only legacy coverage is explicit: production MCP now fails closed
+        // without an identity token.
+        cmd.env("ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS", "1");
     }
     cmd.output().expect("run envelope cli")
 }
@@ -34,6 +38,10 @@ fn run_cli_with_stdin(
         .stdin(Stdio::piped());
     if let Some(t) = token {
         cmd.env("ENVELOPE_AGENT_TOKEN", t);
+    } else {
+        // Test-only legacy coverage is explicit: production MCP now fails closed
+        // without an identity token.
+        cmd.env("ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS", "1");
     }
     let mut child = cmd.spawn().expect("spawn envelope cli");
     child
@@ -145,6 +153,10 @@ fn tool_call(
     cmd.arg("mcp").env("HOME", home).env("ENVELOPE_HOME", home);
     if let Some(t) = token {
         cmd.env("ENVELOPE_AGENT_TOKEN", t);
+    } else {
+        // Test-only legacy coverage is explicit: production MCP now fails closed
+        // without an identity token.
+        cmd.env("ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS", "1");
     }
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -193,6 +205,10 @@ fn tool_call_env(
     cmd.arg("mcp").env("HOME", home).env("ENVELOPE_HOME", home);
     if let Some(t) = token {
         cmd.env("ENVELOPE_AGENT_TOKEN", t);
+    } else {
+        // Test-only legacy coverage is explicit: production MCP now fails closed
+        // without an identity token.
+        cmd.env("ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS", "1");
     }
     for (k, v) in extra_env {
         cmd.env(k, v);
@@ -253,6 +269,7 @@ fn spawn_mcp(home: &std::path::Path) -> Child {
         .arg("mcp")
         .env("HOME", home)
         .env("ENVELOPE_HOME", home)
+        .env("ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -568,6 +585,13 @@ fn mcp_config_includes_runtime_snippets_and_draft_only_safety() {
     );
     assert_eq!(server["args"], json!(["mcp"]));
     assert_eq!(server["env"]["HOME"], temp.path().display().to_string());
+    assert!(
+        server["env"]["ENVELOPE_AGENT_TOKEN"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("REQUIRED"),
+        "generated MCP config must require an identity token"
+    );
 
     let setup = &config["envelopeAgentSetup"];
     assert!(
@@ -599,6 +623,34 @@ fn mcp_config_includes_runtime_snippets_and_draft_only_safety() {
 }
 
 // ── Per-agent identity: MCP enforcement ─────────────────────────────
+
+#[test]
+fn mcp_startup_fails_loud_without_identity_or_unsafe_override() {
+    // The default process environment must not silently regain anonymous
+    // full-mailbox MCP. Explicitly clear both variables so this remains true if a
+    // test runner or shell happens to set either one.
+    let temp = tempfile::tempdir().expect("temp HOME");
+    let mut child = Command::new(envelope_bin())
+        .arg("mcp")
+        .env("HOME", temp.path())
+        .env("ENVELOPE_HOME", temp.path())
+        .env_remove("ENVELOPE_AGENT_TOKEN")
+        .env_remove("ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mcp");
+    drop(child.stdin.take());
+    let out = child.wait_with_output().expect("wait mcp");
+    assert!(!out.status.success(), "identity-less MCP must fail startup");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ENVELOPE_AGENT_TOKEN")
+            && stderr.contains("ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS"),
+        "startup error must state the identity requirement and explicit compatibility override; got: {stderr}"
+    );
+}
 
 #[test]
 fn mcp_startup_fails_loud_on_unknown_token() {
@@ -954,9 +1006,9 @@ fn mcp_rules_run_real_run_requires_rules_run_action() {
 }
 
 #[test]
-fn mcp_watch_status_happy_path_returns_delivery_counts() {
-    // watch_status is read-only (no IMAP): with the watch.read action it returns
-    // a structured summary with delivery counts even on an empty DB.
+fn mcp_watch_status_aggregate_is_denied_for_identity_bound_sessions() {
+    // Delivery counts are aggregate diagnostics, so a restricted identity must
+    // not authorize a default account and then observe every account's health.
     let temp = tempfile::tempdir().expect("temp HOME");
     let home = temp.path();
     seed_account(home);
@@ -964,22 +1016,12 @@ fn mcp_watch_status_happy_path_returns_delivery_counts() {
     set_policy_actions(home, "skippy", "watch.read");
 
     let (payload, is_error) = tool_call(home, Some(&token), "watch_status", json!({}));
-    assert!(
-        !is_error,
-        "watch_status happy path must not error: {payload}"
-    );
-    assert!(payload["watches"].is_array(), "watches array: {payload}");
-    assert!(
-        payload["deliveries"]["delivered"].is_number(),
-        "delivery counts present: {payload}"
-    );
-    assert!(payload["deliveries"]["dead_letter"].is_number());
+    assert!(is_error);
+    assert_eq!(payload["code"], "agent_policy_account_required");
 }
 
 #[test]
-fn mcp_snooze_list_happy_path_returns_array() {
-    // snooze list is read-only (no IMAP): with the snooze action it returns the
-    // (empty) snoozed list without denial or error.
+fn mcp_snooze_list_requires_account_for_identity_bound_sessions() {
     let temp = tempfile::tempdir().expect("temp HOME");
     let home = temp.path();
     seed_account(home);
@@ -987,14 +1029,8 @@ fn mcp_snooze_list_happy_path_returns_array() {
     set_policy_actions(home, "skippy", "snooze");
 
     let (payload, is_error) = tool_call(home, Some(&token), "snooze", json!({ "action": "list" }));
-    assert!(
-        !is_error,
-        "snooze list happy path must not error: {payload}"
-    );
-    assert!(
-        payload.is_array(),
-        "snooze list must be an array: {payload}"
-    );
+    assert!(is_error);
+    assert_eq!(payload["code"], "agent_policy_account_required");
 }
 
 #[test]
@@ -1304,14 +1340,8 @@ fn mcp_stateless_immediate_review_never_claims_a_draft_was_parked() {
             ("ENVELOPE_GOVERNOR_BIN", gov.to_str().unwrap()),
         ],
     );
-    assert!(is_error, "a review verdict blocks the send: {resp}");
+    assert!(is_error, "the locked SMTP gate blocks the send: {resp}");
     assert_eq!(resp["status"], "blocked");
-    assert_eq!(resp["error"]["route"], "review");
-    let reason = resp["error"]["reason"].as_str().unwrap_or_default();
-    assert!(
-        reason.contains("Nothing was sent, created, or parked"),
-        "stateless review must be honest about parking: {reason}"
-    );
     let whole = serde_json::to_string(&resp).unwrap();
     assert!(
         !whole.contains("pending_review"),
@@ -1356,8 +1386,8 @@ fn mcp_draft_backed_immediate_review_does_not_falsely_park() {
             ("ENVELOPE_GOVERNOR_BIN", gov.to_str().unwrap()),
         ],
     );
-    assert!(is_error, "review blocks the send: {resp}");
-    assert_eq!(resp["error"]["route"], "review");
+    assert!(is_error, "the locked SMTP gate blocks the send: {resp}");
+    assert_eq!(resp["status"], "blocked");
     let whole = serde_json::to_string(&resp).unwrap();
     assert!(
         !whole.contains("pending_review"),

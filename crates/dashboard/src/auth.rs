@@ -260,18 +260,17 @@ pub async fn require_auth(
 ) -> Response {
     let header_ok = state.auth.authorize(request.headers());
 
-    // `EventSource` cannot set an `Authorization` header, so the SSE endpoint
-    // also accepts the token via `?access_token=`. Honor it here as an equivalent
-    // credential when the header path did not already authorize. It is checked
-    // with the same constant-time comparison as the header token.
-    //
-    // A query-token match deliberately does NOT set `BearerAuthenticated`: a
-    // query string can be carried by a browser cross-site (navigations, `<img>`,
-    // etc.), so unlike a real `Authorization` header it does not prove same-origin
-    // intent and must stay subject to CSRF on mutating methods. For the GET-only
-    // SSE stream that distinction is moot, but keeping it correct here prevents a
-    // query token from becoming a CSRF bypass on other routes.
-    let query_ok = !header_ok
+    // `EventSource` cannot set an `Authorization` header, so only the GET-only
+    // SSE endpoint accepts `?access_token=`. Never treat a query credential as a
+    // general dashboard API credential: URLs are routinely logged, copied, and
+    // sent in Referer headers. The stream handler emits no redirect and the outer
+    // dashboard headers prevent framing, limiting that compatibility exception.
+    let query_ok = request.method() == axum::http::Method::GET
+        && matches!(
+            request.uri().path(),
+            "/api/events/stream" | "/events/stream"
+        )
+        && !header_ok
         && query_access_token(&request)
             .map(|t| state.auth.query_token_authorized(&t))
             .unwrap_or(false);

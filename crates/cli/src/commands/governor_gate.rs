@@ -18,8 +18,7 @@ use envelope_email_transport::attribution::{
     is_calendar_invitation_content_type,
 };
 use envelope_email_transport::outbound::{
-    GovernorConfig, GovernorMode, GovernorOutcome, GovernorRequest, SendSurface,
-    gate_with_attribution,
+    GovernorConfig, GovernorOutcome, GovernorRequest, SendSurface, gate_with_attribution,
 };
 use envelope_email_transport::smtp::Attachment;
 
@@ -161,14 +160,13 @@ pub(crate) fn unsubscribe_request(
 
 /// Resolve attribution **before any side effect**. Returns the canonical
 /// refusal outcome (already recorded in audit) when the declared+derived set is
-/// missing or invalid; returns `None` when the request may proceed (attributed,
-/// or `off` mode — the documented gate kill-switch).
+/// missing or invalid; returns `None` when the request is attributed and may
+/// proceed to its normal send-policy disposition.
 ///
-/// The attribution precondition fails closed in **both** `required` and `warn`
-/// modes: warn softens a Governor *verdict* on an already-attributed request, but
-/// it never waives Envelope's attribution protocol. A missing/invalid declaration
-/// on a bot-originated action always blocks here, before any draft is created or
-/// any wire send happens.
+/// SMTP-capable Envelope processes always use the required trusted Governor
+/// configuration. A missing/invalid declaration on a bot-originated action
+/// therefore always blocks here, before any draft is created or any wire send
+/// happens.
 ///
 /// This runs at queue time on every agent surface so a bot learns about a
 /// problem immediately rather than discovering a parked draft later; the actual
@@ -180,12 +178,7 @@ pub(crate) fn precheck_attribution(
     req: &GovernorRequest,
     agent_id: Option<&str>,
 ) -> Option<GovernorOutcome> {
-    let config = GovernorConfig::from_env();
-    if config.mode == GovernorMode::Off {
-        // Off is the documented operator kill-switch: it disables the gate and the
-        // attribution precondition alike.
-        return None;
-    }
+    let config = GovernorConfig::smtp_required();
     let resolution = req.resolution.as_ref()?;
     if resolution.is_attributed() {
         return None;
@@ -217,7 +210,7 @@ pub(crate) fn gate_and_record_with_agent(
     req: &GovernorRequest,
     agent_id: Option<&str>,
 ) -> GovernorOutcome {
-    let config = GovernorConfig::from_env();
+    let config = GovernorConfig::smtp_required();
     let req = req.clone().with_agent_id(agent_id);
     let outcome = gate_with_attribution(&config, &req);
     record_governor_event(db, account_id, &req, &outcome, agent_id);
@@ -285,7 +278,7 @@ fn record_governor_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use envelope_email_transport::outbound::{GovernorConfig, gate_with_attribution};
+    use envelope_email_transport::outbound::{GovernorConfig, GovernorMode, gate_with_attribution};
 
     fn nonexistent_required() -> GovernorConfig {
         GovernorConfig {

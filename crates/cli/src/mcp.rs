@@ -179,38 +179,81 @@ fn is_always_allowed_readonly(tool_name: &str) -> bool {
     matches!(tool_name, "governor_catalog")
 }
 
-/// Resolve the account string a policy check should be evaluated against. Uses
-/// the tool's `account` param verbatim when supplied (case-sensitive, matching
-/// the transport allow-list); otherwise falls back to the configured default
-/// account id so the check runs against a concrete account rather than nothing.
-fn policy_account(params: &Value) -> String {
-    if let Some(account) = params.get("account").and_then(|v| v.as_str()) {
-        return account.to_string();
+/// Resolve the actual account a policy must constrain before dispatch. Never
+/// authorize a caller-provided spelling and then let a handler resolve it to a
+/// different account. Draft resources are especially important: their id is
+/// globally addressable, so their persisted account is authoritative and an
+/// optional account parameter must agree with it.
+fn authoritative_policy_account(
+    db: &Database,
+    tool_name: &str,
+    params: &Value,
+) -> Result<String, String> {
+    if matches!(tool_name, "accounts" | "watch_status") {
+        return Err(json!({
+            "code": "agent_policy_account_required",
+            "reason": format!("{tool_name} is an aggregate diagnostic and is unavailable to identity-bound MCP sessions")
+        })
+        .to_string());
     }
-    Database::open_default()
-        .ok()
-        .and_then(|db| db.default_account().ok().flatten())
-        .map(|a| a.id)
-        .unwrap_or_default()
+
+    if matches!(tool_name, "get_draft" | "modify_draft" | "send_draft") {
+        let draft_id = required_str(params, "draft_id")?;
+        let draft = db
+            .get_draft(draft_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "draft not found".to_string())?;
+        if let Some(requested) = optional_str(params, "account") {
+            let requested = crate::commands::common::resolve_account(db, Some(requested))
+                .map_err(|_| "account not found".to_string())?;
+            if requested.id != draft.account_id {
+                return Err("draft does not belong to the requested account".to_string());
+            }
+        }
+        return Ok(draft.account_id);
+    }
+
+    // `snooze list` without an account and future aggregate-only MCP tools must
+    // not be accidentally authorized against the default account then enumerate
+    // every account in their handler.
+    if tool_name == "snooze"
+        && params
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("list")
+            == "list"
+        && optional_str(params, "account").is_none()
+    {
+        return Err(json!({
+            "code": "agent_policy_account_required",
+            "reason": "account is required for identity-bound MCP snooze diagnostics"
+        })
+        .to_string());
+    }
+
+    crate::commands::common::resolve_account(db, optional_str(params, "account"))
+        .map(|account| account.id)
+        .map_err(|_| "account not found".to_string())
 }
 
 /// Authorize a tool call against the agent policy when a context is present.
-/// Anonymous sessions (`None`) authorize everything, preserving today's behavior.
-/// Denials serialize the stable `{code, reason}` object as the tool error string.
-fn authorize_tool_call(
+/// Identity-bound calls resolve their authoritative account before policy
+/// evaluation; anonymous access is only reachable through the explicit unsafe
+/// startup override. Denials serialize the stable `{code, reason}` object as the
+/// tool error string.
+fn authorize_tool_call_with_db(
+    db: &Database,
     ctx: Option<&AgentContext>,
     tool_name: &str,
     params: &Value,
 ) -> Result<(), String> {
-    // Read-only discovery tools are always authorized so a deny-by-default agent
-    // can still discover how to comply.
     if is_always_allowed_readonly(tool_name) {
         return Ok(());
     }
     let Some(ctx) = ctx else {
         return Ok(());
     };
-    let account = policy_account(params);
+    let account = authoritative_policy_account(db, tool_name, params)?;
     let folder = tool_folder(tool_name, params);
 
     // rules_run authorizes under `rules.read` for its default dry-run preview and
@@ -229,6 +272,18 @@ fn authorize_tool_call(
 
     ctx.authorize_tool(tool_name, &account, folder)
         .map_err(|denial| denial.to_json().to_string())
+}
+
+fn authorize_tool_call(
+    ctx: Option<&AgentContext>,
+    tool_name: &str,
+    params: &Value,
+) -> Result<(), String> {
+    if ctx.is_none() || is_always_allowed_readonly(tool_name) {
+        return Ok(());
+    }
+    let db = Database::open_default().map_err(|e| e.to_string())?;
+    authorize_tool_call_with_db(&db, ctx, tool_name, params)
 }
 
 /// Mutating tools whose outcome is recorded by the dispatcher. move/flag/tag/
@@ -292,9 +347,17 @@ fn record_tool_denial(
     );
 }
 
-/// Best-effort account id for audit rows: the `account` param resolved the same
-/// way the tool itself would resolve it (id or email), or the default account.
-fn audit_account_id(db: &Database, params: &Value) -> Option<String> {
+/// Best-effort authoritative account id for audit rows. Draft resource actions
+/// use the persisted draft owner, matching the policy subject; other tools use
+/// the account resolver (id/email or default) used by their handlers.
+fn audit_account_id(db: &Database, tool_name: &str, params: &Value) -> Option<String> {
+    if matches!(tool_name, "get_draft" | "modify_draft" | "send_draft") {
+        if let Some(draft_id) = optional_str(params, "draft_id") {
+            if let Ok(Some(draft)) = db.get_draft(draft_id) {
+                return Some(draft.account_id);
+            }
+        }
+    }
     crate::commands::common::resolve_account(db, optional_str(params, "account"))
         .ok()
         .map(|a| a.id)
@@ -316,7 +379,7 @@ async fn handle_tool_call(
     if let Err(denial) = authorize_tool_call(ctx, tool_name, params) {
         if agent_context::agent_id_of(ctx).is_some() {
             if let Ok(db) = Database::open_default() {
-                let acct = audit_account_id(&db, params);
+                let acct = audit_account_id(&db, tool_name, params);
                 record_tool_denial(&db, ctx, acct.as_deref(), tool_name, &denial_code(&denial));
             }
         }
@@ -328,7 +391,7 @@ async fn handle_tool_call(
     crate::commands::authored_body::attach_tool_notice(tool_name, params, &mut result);
     if agent_context::agent_id_of(ctx).is_some() && DISPATCH_LOGGED_TOOLS.contains(&tool_name) {
         if let Ok(db) = Database::open_default() {
-            if let Some(acct) = audit_account_id(&db, params) {
+            if let Some(acct) = audit_account_id(&db, tool_name, params) {
                 record_tool_outcome(&db, ctx, &acct, tool_name, &result);
             }
         }
@@ -2102,7 +2165,8 @@ async fn handle_bulk(
     if let Some(ctx) = ctx {
         let underlying = agent_context::bulk_underlying_action(&op_str)
             .ok_or_else(|| format!("unknown bulk op '{op_str}'"))?;
-        let account = policy_account(params);
+        let db = Database::open_default().map_err(|e| e.to_string())?;
+        let account = authoritative_policy_account(&db, "bulk", params)?;
         let folder = params.get("folder").and_then(|v| v.as_str());
         ctx.authorize_action(underlying, &account, folder)
             .map_err(|denial| denial.to_json().to_string())?;
@@ -2482,11 +2546,18 @@ pub(crate) fn config_json() -> Value {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "envelope".to_string());
     let home = std::env::var("HOME").unwrap_or_default();
-    let env = if home.is_empty() {
-        json!({})
-    } else {
-        json!({ "HOME": home.clone() })
-    };
+    // Never generate an anonymous full-mailbox MCP server. The placeholder is
+    // intentionally invalid until an operator creates an agent and replaces it
+    // with that agent's token; startup then fails closed rather than widening.
+    let mut env = serde_json::Map::new();
+    if !home.is_empty() {
+        env.insert("HOME".to_string(), Value::String(home.clone()));
+    }
+    env.insert(
+        agent_context::AGENT_TOKEN_ENV.to_string(),
+        Value::String("<REQUIRED: replace with an Envelope agent token>".to_string()),
+    );
+    let env = Value::Object(env);
     let server = json!({
         "command": exe.clone(),
         "args": ["mcp"],
@@ -2543,8 +2614,16 @@ fn codex_config_snippet(command_path: &str, home: &str) -> String {
     );
     if !home.is_empty() {
         snippet.push_str(&format!(
-            "\n\n[mcp_servers.envelope.env]\nHOME = {}",
-            toml_string(home)
+            "\n\n[mcp_servers.envelope.env]\nHOME = {}\n{} = {}",
+            toml_string(home),
+            agent_context::AGENT_TOKEN_ENV,
+            toml_string("<REQUIRED: replace with an Envelope agent token>")
+        ));
+    } else {
+        snippet.push_str(&format!(
+            "\n\n[mcp_servers.envelope.env]\n{} = {}",
+            agent_context::AGENT_TOKEN_ENV,
+            toml_string("<REQUIRED: replace with an Envelope agent token>")
         ));
     }
     snippet
@@ -2629,6 +2708,128 @@ fn write_mcp_message<W: Write, T: Serialize>(writer: &mut W, value: &T) -> anyho
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn identity_policy_uses_draft_owner_not_caller_account_or_default() {
+        use envelope_email_transport::{AgentPolicy as TransportPolicy, SendMode};
+
+        let db = Database::open_memory().unwrap();
+        for (id, username) in [
+            ("acct-allowed", "allowed@example.test"),
+            ("acct-foreign", "foreign@example.test"),
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT INTO accounts (id, name, username, domain, smtp_host, smtp_port, imap_host, imap_port, encrypted_password) VALUES (?1, 'Test', ?2, 'example.test', 'smtp.example.test', 587, 'imap.example.test', 993, 'x')",
+                    (id, username),
+                )
+                .unwrap();
+        }
+        let own = db
+            .create_draft(
+                "acct-allowed",
+                "to@example.test",
+                Some("own"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("mcp"),
+            )
+            .unwrap();
+        let foreign = db
+            .create_draft(
+                "acct-foreign",
+                "to@example.test",
+                Some("foreign"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("mcp"),
+            )
+            .unwrap();
+        let ctx = AgentContext {
+            agent_id: "agent-1".into(),
+            agent_name: "restricted".into(),
+            policy: TransportPolicy {
+                allowed_accounts: vec!["acct-allowed".into()],
+                allowed_folders: vec!["*".into()],
+                allowed_actions: vec!["draft.read".into(), "draft.modify".into(), "send".into()],
+                send_mode_ceiling: SendMode::DraftOnly,
+                allow_recipients: Vec::new(),
+            },
+        };
+
+        assert!(authorize_tool_call_with_db(
+            &db,
+            Some(&ctx),
+            "get_draft",
+            &json!({"draft_id": own.id}),
+        )
+        .is_ok());
+        assert_eq!(
+            audit_account_id(&db, "send_draft", &json!({"draft_id": foreign.id})),
+            Some("acct-foreign".to_string()),
+            "audit attribution must use the same persisted owner as policy"
+        );
+        let denial = authorize_tool_call_with_db(
+            &db,
+            Some(&ctx),
+            "send_draft",
+            &json!({"draft_id": foreign.id}),
+        )
+        .unwrap_err();
+        assert!(denial.contains("agent_policy_denied_account"), "{denial}");
+    }
+
+    #[test]
+    fn identity_policy_rejects_account_omitted_aggregate_diagnostics() {
+        use envelope_email_transport::{AgentPolicy as TransportPolicy, SendMode};
+
+        let db = Database::open_memory().unwrap();
+        let ctx = AgentContext {
+            agent_id: "agent-1".into(),
+            agent_name: "restricted".into(),
+            policy: TransportPolicy {
+                allowed_accounts: vec!["*".into()],
+                allowed_folders: vec!["*".into()],
+                allowed_actions: vec!["*".into()],
+                send_mode_ceiling: SendMode::DraftOnly,
+                allow_recipients: Vec::new(),
+            },
+        };
+        for tool in ["accounts", "watch_status"] {
+            let denial =
+                authorize_tool_call_with_db(&db, Some(&ctx), tool, &json!({})).unwrap_err();
+            assert!(
+                denial.contains("agent_policy_account_required"),
+                "{tool}: {denial}"
+            );
+        }
+        let denial =
+            authorize_tool_call_with_db(&db, Some(&ctx), "snooze", &json!({"action": "list"}))
+                .unwrap_err();
+        assert!(denial.contains("agent_policy_account_required"), "{denial}");
+    }
+
+    #[test]
+    fn generated_mcp_config_requires_an_agent_token() {
+        let cfg = config_json();
+        let token = cfg["mcpServers"]["envelope"]["env"][agent_context::AGENT_TOKEN_ENV]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            token.contains("REQUIRED"),
+            "generated config must not start anonymously"
+        );
+        assert!(
+            !cfg.to_string()
+                .contains(agent_context::UNSAFE_ANONYMOUS_ENV)
+        );
+    }
 
     // ── stdio framing (MCP spec: newline-delimited JSON-RPC) ──────────
 
@@ -3043,8 +3244,8 @@ mod tests {
 
 pub async fn run(backend: CredentialBackend) -> anyhow::Result<()> {
     // Resolve the per-agent context from ENVELOPE_AGENT_TOKEN once at startup.
-    // Unset → anonymous MCP (defaults unchanged). Set-but-invalid → fail loud;
-    // never silently fall back to anonymous.
+    // Unset/invalid fails closed; anonymous full-mailbox operation requires the
+    // explicit ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS=1 compatibility override.
     let agent_ctx = {
         let db = Database::open_default()?;
         agent_context::resolve_from_env(&db)?

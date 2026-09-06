@@ -3,12 +3,12 @@
 
 //! Per-agent identity context for the MCP transport.
 //!
-//! At MCP startup we read `ENVELOPE_AGENT_TOKEN`. When present, it resolves to a
+//! At MCP startup Envelope requires `ENVELOPE_AGENT_TOKEN` and resolves it to a
 //! stored [`AgentIdentity`] and its policy; every subsequent MCP tool call is
 //! authorized against that policy before dispatch, send modes are clamped to the
-//! policy ceiling, and mutating writes are attributed to the agent id. When the
-//! env var is unset the MCP server runs anonymously exactly as before — existing
-//! users are unaffected.
+//! policy ceiling, and mutating writes are attributed to the agent id. Anonymous
+//! full-mailbox MCP is deliberately unavailable by default: legacy operators must
+//! set the conspicuous `ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS=1` escape hatch.
 //!
 //! This module owns the two impedance mismatches between the store and the
 //! transport policy types:
@@ -30,8 +30,13 @@ use envelope_email_store::{
 use envelope_email_transport::{AgentPolicy as TransportPolicy, PolicyDenial, SendMode};
 
 /// Env var carrying the raw bearer token that selects an agent identity for the
-/// MCP session. Unset means anonymous MCP (today's behavior).
+/// MCP session.
 pub const AGENT_TOKEN_ENV: &str = "ENVELOPE_AGENT_TOKEN";
+/// Explicit, audit-visible compatibility escape hatch for legacy anonymous MCP.
+/// Any value other than the exact string `1` is rejected; generated config never
+/// sets it. Anonymous MCP is full-mailbox access, so operators must opt in
+/// conspicuously rather than receiving it as an unset-token default.
+pub const UNSAFE_ANONYMOUS_ENV: &str = "ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS";
 
 /// A resolved agent identity plus its enforcement policy for one MCP session.
 #[derive(Debug, Clone)]
@@ -79,24 +84,49 @@ impl AgentContext {
 
 /// Resolve the MCP agent context from the environment.
 ///
-/// - Env unset → `Ok(None)` (anonymous MCP; defaults unchanged).
-/// - Env set + valid, non-revoked token → `Ok(Some(ctx))`.
-/// - Env set + unknown/revoked token → `Err(_)`. The caller must fail startup
-///   loud and must never fall back to anonymous.
+/// - A valid, non-revoked `ENVELOPE_AGENT_TOKEN` → `Ok(Some(ctx))`.
+/// - An unset/blank token → startup refusal, unless the operator has set the
+///   exact unsafe compatibility flag `ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS=1`.
+/// - A set but unknown/revoked token → startup refusal; never fall back to
+///   anonymous access.
 ///
 /// The raw token is never echoed into the error.
 pub fn resolve_from_env(db: &Database) -> anyhow::Result<Option<AgentContext>> {
-    let raw = match std::env::var(AGENT_TOKEN_ENV) {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => return Ok(None),
+    let raw = std::env::var(AGENT_TOKEN_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let unsafe_anonymous = std::env::var(UNSAFE_ANONYMOUS_ENV).ok().as_deref() == Some("1");
+    resolve_from_values(db, raw, unsafe_anonymous)
+}
+
+/// Pure startup-policy core, separated from process environment lookup so the
+/// fail-closed identity boundary is directly testable without mutating global
+/// environment state shared by parallel tests.
+fn resolve_from_values(
+    db: &Database,
+    raw: Option<String>,
+    unsafe_anonymous: bool,
+) -> anyhow::Result<Option<AgentContext>> {
+    let Some(raw) = raw else {
+        if unsafe_anonymous {
+            tracing::warn!(
+                "UNSAFE anonymous MCP compatibility mode enabled; all mailbox access is unaudited and unrestricted"
+            );
+            return Ok(None);
+        }
+        anyhow::bail!(
+            "{AGENT_TOKEN_ENV} is required for MCP startup. Create an identity with \
+             `envelope agent create <name>` and configure its token. Legacy anonymous \
+             full-mailbox access requires the explicit UNSAFE operator override \
+             {UNSAFE_ANONYMOUS_ENV}=1."
+        );
     };
 
     let identity = db.get_agent_by_token(&raw)?.ok_or_else(|| {
         anyhow::anyhow!(
             "{AGENT_TOKEN_ENV} is set but does not match any active agent identity \
              (unknown or revoked token); refusing to start the MCP server. \
-             Create one with `envelope agent create <name>` or unset {AGENT_TOKEN_ENV} \
-             to run anonymously."
+             Create one with `envelope agent create <name>`."
         )
     })?;
 
@@ -233,6 +263,21 @@ pub fn _describe(identity: &AgentIdentity) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_identity_is_required_unless_unsafe_anonymous_is_explicit() {
+        let db = Database::open_memory().unwrap();
+        let required = resolve_from_values(&db, None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(required.contains(AGENT_TOKEN_ENV));
+        assert!(required.contains(UNSAFE_ANONYMOUS_ENV));
+        assert!(resolve_from_values(&db, None, true).unwrap().is_none());
+        let unknown = resolve_from_values(&db, Some("unknown-token".into()), true)
+            .unwrap_err()
+            .to_string();
+        assert!(unknown.contains("unknown or revoked"));
+    }
 
     #[test]
     fn send_mode_ceiling_maps_all_four_variants_exhaustively() {

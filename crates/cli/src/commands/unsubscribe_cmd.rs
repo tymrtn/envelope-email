@@ -442,7 +442,7 @@ impl UnsubFailure {
                 None,
             ),
             UnsubFailure::GovernorUnavailable => (
-                "Governor was unavailable; retry once it is reachable (check ENVELOPE_GOVERNOR_MODE / ENVELOPE_GOVERNOR_BIN)".to_string(),
+                "Governor was unavailable; retry once the trusted Governor executable is reachable".to_string(),
                 Some(build_unsubscribe_retry_with_attrs(uid, folder, account, declared)),
             ),
             UnsubFailure::SmtpTransport => (

@@ -48,15 +48,13 @@ pub const OUTBOX_COOLDOWN_REASON: &str = "queued in the Envelope outbox for the 
 /// Environment variable that overrides the default actual-send cooldown.
 pub const ENV_COOLDOWN_SECONDS: &str = "ENVELOPE_SEND_COOLDOWN_SECONDS";
 
-/// Environment variable that selects the Governor gate mode.
-pub const ENV_GOVERNOR_MODE: &str = "ENVELOPE_GOVERNOR_MODE";
-
-/// Environment variable that points at the Governor CLI binary.
-pub const ENV_GOVERNOR_BIN: &str = "ENVELOPE_GOVERNOR_BIN";
-
-/// Tyler-local canonical Governor binary path. Used as a fallback before PATH so
-/// Envelope does not accidentally hit an older `governor` binary on this machine.
-pub const DEFAULT_LOCAL_GOVERNOR_BIN: &str =
+/// Canonical Governor executable for SMTP-capable Envelope processes.
+///
+/// This is deliberately an absolute path, not a PATH lookup or an environment
+/// override. A missing executable fails the SMTP gate closed rather than allowing
+/// a caller to substitute a permissive binary. Operators must provision this
+/// trusted path before enabling SMTP-capable processes.
+pub const SMTP_GOVERNOR_BIN: &str =
     "/Users/tylermartin/Dropbox/Code/governor/governor2/target/release/governor";
 
 /// Resolve the actual-send cooldown in seconds.
@@ -177,23 +175,26 @@ pub struct GovernorConfig {
 }
 
 impl GovernorConfig {
-    /// Build config from the environment. Default mode is `required` so that a
-    /// Tyler-local install with no configuration still fails safe.
+    /// Configuration for every SMTP-capable Envelope path.
+    ///
+    /// Do not read a mode or executable from the process environment here. CLI,
+    /// MCP, scheduled sweeps, and dashboard workers all inherit caller-controlled
+    /// environments; accepting overrides at this boundary lets an agent disable
+    /// the Governor gate or replace its decision engine. A missing trusted binary
+    /// therefore produces the existing fail-closed `governor_unavailable` result.
+    pub fn smtp_required() -> Self {
+        Self {
+            mode: GovernorMode::Required,
+            bin: SMTP_GOVERNOR_BIN.to_string(),
+        }
+    }
+
+    /// Back-compatible name retained for callers compiled against the transport
+    /// crate. It intentionally has SMTP-required semantics and ignores the
+    /// environment; diagnostics must exercise `gate` with an explicit in-memory
+    /// [`GovernorConfig`] and must not be wired to SMTP.
     pub fn from_env() -> Self {
-        let mode = std::env::var(ENV_GOVERNOR_MODE)
-            .ok()
-            .map(|v| GovernorMode::parse_or_required(&v))
-            .unwrap_or(GovernorMode::Required);
-        let bin = std::env::var(ENV_GOVERNOR_BIN)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .or_else(|| {
-                std::path::Path::new(DEFAULT_LOCAL_GOVERNOR_BIN)
-                    .exists()
-                    .then(|| DEFAULT_LOCAL_GOVERNOR_BIN.to_string())
-            })
-            .unwrap_or_else(|| "governor".to_string());
-        Self { mode, bin }
+        Self::smtp_required()
     }
 }
 
@@ -1363,6 +1364,18 @@ mod tests {
             resolve_disposition(0, false, true),
             SendDisposition::Immediate
         );
+    }
+
+    #[test]
+    fn smtp_config_is_required_and_uses_the_trusted_absolute_binary() {
+        let config = GovernorConfig::smtp_required();
+        assert_eq!(config.mode, GovernorMode::Required);
+        assert_eq!(config.bin, SMTP_GOVERNOR_BIN);
+        assert!(std::path::Path::new(&config.bin).is_absolute());
+        // The backwards-compatible constructor is intentionally the same locked
+        // SMTP configuration, not a caller-environment parser.
+        assert_eq!(GovernorConfig::from_env().mode, GovernorMode::Required);
+        assert_eq!(GovernorConfig::from_env().bin, SMTP_GOVERNOR_BIN);
     }
 
     #[test]
