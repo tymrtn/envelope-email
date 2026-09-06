@@ -6,6 +6,7 @@ use envelope_email_store::CredentialBackend;
 use envelope_email_store::models::MessageSummary;
 
 use super::common::setup_credentials;
+use super::provenance;
 use super::ui;
 
 /// Canonical folder roles accepted by `--role`/`--roles`. Mirrors the
@@ -55,7 +56,12 @@ pub async fn run(
             .iter()
             .map(|(f, m)| ui::with_ui(m, ui::message_or_draft_ui(&db, &account_id, m.uid, f)))
             .collect();
-        println!("{}", serde_json::to_string_pretty(&enriched)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&provenance::annotate_inbound(serde_json::json!(
+                enriched
+            )))?
+        );
     } else {
         if hits.is_empty() {
             if roles.is_empty() {

@@ -10,6 +10,7 @@ use envelope_email_transport::code_extractor::redact_codes;
 use envelope_email_transport::url_guard::check_public_url;
 
 use super::common::resolve_account;
+use super::provenance;
 
 /// Length of the route-secret prefix shown in list output. The full secret is
 /// only ever printed once, at route creation.
@@ -46,7 +47,11 @@ pub fn run_list(
         .collect::<Vec<_>>();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&events)?);
+        let output = events
+            .iter()
+            .map(provenance::event_json)
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
 
@@ -111,7 +116,10 @@ pub fn run_ack(
     let event = redact_event_for_output(event);
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&event)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&provenance::event_json(&event))?
+        );
     } else {
         println!("Acked event {}", event.id);
         println!("  Type:    {}", event.event_type);

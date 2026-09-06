@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use envelope_email_store::CredentialBackend;
 
 use super::common::setup_credentials;
+use super::provenance;
 use super::ui;
 
 #[tokio::main]
@@ -30,7 +31,10 @@ pub async fn run(
                     &msg,
                     ui::message_or_draft_ui(&db, &creds.account.id, msg.uid, folder),
                 );
-                println!("{}", serde_json::to_string_pretty(&value)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&provenance::annotate_inbound(value))?
+                );
             } else {
                 println!("From: {}", msg.from_addr);
                 let to_line = if msg.to_addrs.is_empty() {

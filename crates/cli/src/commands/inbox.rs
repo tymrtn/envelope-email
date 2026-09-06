@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use envelope_email_store::CredentialBackend;
 
 use super::common::setup_credentials;
+use super::provenance;
 use super::ui;
 
 #[tokio::main]
@@ -29,7 +30,12 @@ pub async fn run(
             .iter()
             .map(|m| ui::with_ui(m, ui::message_or_draft_ui(&db, account_id, m.uid, folder)))
             .collect();
-        println!("{}", serde_json::to_string_pretty(&enriched)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&provenance::annotate_inbound(serde_json::json!(
+                enriched
+            )))?
+        );
     } else {
         if messages.is_empty() {
             println!("No messages in {folder}");

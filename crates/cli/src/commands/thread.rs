@@ -6,6 +6,7 @@ use envelope_email_store::Database;
 use envelope_email_store::credential_store::CredentialBackend;
 
 use super::common::{resolve_account, setup_credentials};
+use super::provenance;
 
 /// `envelope-email thread <uid>` — show the full conversation thread for a message.
 #[tokio::main]
@@ -71,9 +72,16 @@ pub async fn run_show(
             "first_seen": thread.first_seen,
             "last_activity": thread.last_activity,
             "account_id": thread.account_id,
+            "threading_trust": {
+                "rfc_header_links": "unverified_for_relationship_trust",
+                "has_reply_uses_outbound_confirmed_messages": true,
+            },
             "messages": messages,
         });
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&provenance::annotate_inbound(output))?
+        );
     } else {
         // Pretty conversation view
         let subject_display = if messages.is_empty() {
@@ -154,9 +162,15 @@ pub async fn run_list(
                 "first_seen": thread.first_seen,
                 "last_activity": thread.last_activity,
                 "account_id": thread.account_id,
+                "threading_trust": "header_links_unverified_for_relationship_trust",
             }));
         }
-        println!("{}", serde_json::to_string_pretty(&enriched)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&provenance::annotate_inbound(serde_json::json!(
+                enriched
+            )))?
+        );
     } else {
         if threads.is_empty() {
             println!("No threads found. Build threads with: envelope thread build");

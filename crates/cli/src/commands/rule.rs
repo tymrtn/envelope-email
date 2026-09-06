@@ -10,6 +10,7 @@ use envelope_email_transport::rules::{self, Action, MessageContext};
 use tracing::info;
 
 use super::common::setup_credentials;
+use super::provenance;
 use super::ui;
 
 /// Parse a `key=value` score pair (e.g. `urgent=0.7`).
@@ -389,7 +390,7 @@ pub async fn run_test(
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
+            serde_json::to_string_pretty(&provenance::annotate_inbound(serde_json::json!({
                 "uid": uid,
                 "folder": folder,
                 "subject": msg.subject,
@@ -399,7 +400,7 @@ pub async fn run_test(
                 "rules_evaluated": enabled_rules.len(),
                 "matches": matches,
                 "ui": ui::message_ui(&account_id, uid, folder),
-            }))?
+            })))?
         );
     } else {
         println!("Testing UID {uid} ({folder})");
@@ -616,7 +617,10 @@ pub async fn run_preview(
     let total = result["processed"].as_u64().unwrap_or(0) as usize;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&provenance::annotate_inbound(result.clone()))?
+        );
     } else if matches.is_empty() {
         println!(
             "Preview: no rules would touch {total} message(s) in {folder}; no mailbox changes made"
@@ -664,7 +668,10 @@ pub async fn run_apply(
     let result = apply_core(&mut client, &db, &account_id, folder, limit).await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&provenance::annotate_inbound(result.clone()))?
+        );
     } else if result.get("message").and_then(|m| m.as_str()) == Some("no enabled rules") {
         println!("No enabled rules — nothing to do");
     } else {

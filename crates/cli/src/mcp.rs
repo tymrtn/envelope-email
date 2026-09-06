@@ -146,6 +146,7 @@ fn wrap_untrusted(value: Value) -> Value {
     json!({
         "_envelope_trust": UNTRUSTED_TRUST_MARKER,
         "_warning": UNTRUSTED_WARNING,
+        "trust": crate::commands::provenance::inbound_trust(),
         "content": value,
     })
 }
@@ -2185,6 +2186,10 @@ async fn handle_thread(params: &Value, backend: CredentialBackend) -> Result<Val
             "first_seen": thread.first_seen,
             "last_activity": thread.last_activity,
             "account_id": thread.account_id,
+            "threading_trust": {
+                "rfc_header_links": "unverified_for_relationship_trust",
+                "has_reply_uses_outbound_confirmed_messages": true,
+            },
             "messages": messages,
         })));
     }
@@ -2204,6 +2209,7 @@ async fn handle_thread(params: &Value, backend: CredentialBackend) -> Result<Val
                     "first_seen": thread.first_seen,
                     "last_activity": thread.last_activity,
                     "account_id": thread.account_id,
+                    "threading_trust": "header_links_unverified_for_relationship_trust",
                 })
             })
             .collect(),
@@ -2226,6 +2232,7 @@ async fn handle_rules_preview(params: &Value, backend: CredentialBackend) -> Res
 
     crate::commands::rule::preview_core(&mut client, &db, &creds.account.id, folder, limit)
         .await
+        .map(wrap_untrusted)
         .map_err(|e| e.to_string())
 }
 
