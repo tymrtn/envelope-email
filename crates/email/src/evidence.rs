@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::backup;
 use crate::ingress;
+use crate::secure_output::SecureOutputDir;
 
 pub const EVIDENCE_FORMAT_VERSION: u32 = 1;
 pub const DEFAULT_MAX_THREAD_MESSAGES: usize = 500;
@@ -754,7 +755,9 @@ pub fn write_evidence_bundle(
         path: root.to_path_buf(),
         reason: e.to_string(),
     })?;
-    fs::create_dir_all(root)?;
+    // Path validation remains the canonical layout check. The retained
+    // directory capability is what closes the validation-to-write race.
+    let root_dir = SecureOutputDir::open_or_create(root)?;
 
     for record in &manifest.messages {
         let bytes = messages
@@ -783,16 +786,22 @@ pub fn write_evidence_bundle(
                 ),
             });
         }
-        backup::write_atomic(&root.join(&record.rel_path), bytes)?;
+        let message_dir = secure_message_dir(&root_dir, &record.rel_path)?;
+        let file_name = record
+            .rel_path
+            .rsplit_once('/')
+            .map(|(_, name)| name)
+            .expect("validated evidence message path has a file name");
+        message_dir.write_new_atomic(file_name, bytes)?;
     }
 
     let manifest_bytes = serde_json::to_vec_pretty(manifest)?;
     let index = render_index_csv(manifest)?;
     let readme = render_readme(manifest);
 
-    backup::write_atomic(&root.join("manifest.json"), &manifest_bytes)?;
-    backup::write_atomic(&root.join("index.csv"), index.as_bytes())?;
-    backup::write_atomic(&root.join("README.md"), readme.as_bytes())?;
+    root_dir.write_new_atomic("manifest.json", &manifest_bytes)?;
+    root_dir.write_new_atomic("index.csv", index.as_bytes())?;
+    root_dir.write_new_atomic("README.md", readme.as_bytes())?;
 
     let mut entries = vec![
         ("manifest.json".to_string(), sha256_hex(&manifest_bytes)),
@@ -807,17 +816,48 @@ pub fn write_evidence_bundle(
     );
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let sha256sums = render_sha256_entries(&entries);
-    backup::write_atomic(&root.join("SHA256SUMS"), sha256sums.as_bytes())?;
+    root_dir.write_new_atomic("SHA256SUMS", sha256sums.as_bytes())?;
 
     let mut bundle_entries = entries;
     bundle_entries.push(("SHA256SUMS".to_string(), sha256_hex(sha256sums.as_bytes())));
     let digest = bundle_digest(&bundle_entries);
-    backup::write_atomic(
-        &root.join("bundle.sha256"),
-        format!("{digest}\n").as_bytes(),
-    )?;
+    root_dir.write_new_atomic("bundle.sha256", format!("{digest}\n").as_bytes())?;
 
     Ok(())
+}
+
+fn secure_message_dir(
+    root_dir: &SecureOutputDir,
+    rel_path: &str,
+) -> Result<SecureOutputDir, EvidenceError> {
+    let mut components = rel_path.split('/');
+    let messages = components
+        .next()
+        .ok_or_else(|| EvidenceError::InvalidBundle {
+            path: PathBuf::from(rel_path),
+            reason: "missing messages directory".to_string(),
+        })?;
+    let folder = components
+        .next()
+        .ok_or_else(|| EvidenceError::InvalidBundle {
+            path: PathBuf::from(rel_path),
+            reason: "missing message folder".to_string(),
+        })?;
+    let file = components
+        .next()
+        .ok_or_else(|| EvidenceError::InvalidBundle {
+            path: PathBuf::from(rel_path),
+            reason: "missing evidence message filename".to_string(),
+        })?;
+    if components.next().is_some() || messages != "messages" || file.is_empty() {
+        return Err(EvidenceError::InvalidBundle {
+            path: PathBuf::from(rel_path),
+            reason: "invalid canonical evidence message path".to_string(),
+        });
+    }
+    Ok(root_dir
+        .open_or_create_child(messages)?
+        .open_or_create_child(folder)?)
 }
 
 pub fn read_manifest(bundle_dir: &Path) -> Result<EvidenceManifest, EvidenceError> {
@@ -1567,10 +1607,10 @@ fn try_extract_text(att: &ExtractedAttachment) -> Result<String, String> {
     }
 }
 
-/// Export one attachment into `message_dir` (which must already be a validated
-/// child of the output root). Writes raw bytes under a normalized filename and
-/// optionally a `<normalized>.txt` extracted-text file. Idempotent: identical
-/// content overwrites identically. Returns provenance for aggregation.
+/// Export one attachment into a descriptor-confined per-message subdirectory.
+/// Writes raw bytes under a normalized filename and optionally a
+/// `<normalized>.txt` extracted-text file. Identical evidence remains
+/// idempotent; conflicting local output is never overwritten.
 #[allow(clippy::too_many_arguments)]
 pub fn export_one_attachment(
     out_root: &Path,
@@ -1582,8 +1622,7 @@ pub fn export_one_attachment(
     tool_version: &str,
 ) -> Result<WrittenAttachment, EvidenceError> {
     let dir_name = attachment_message_dir(&source.folder, source.uidvalidity, source.uid);
-    let message_dir = safe_join(out_root, &dir_name)?;
-    fs::create_dir_all(&message_dir)?;
+    let message_dir = SecureOutputDir::open_or_create(out_root)?.open_or_create_child(&dir_name)?;
 
     if att.bytes.len() > ingress::MAX_ATTACHMENT_BYTES {
         return Err(EvidenceError::QueryValidation(format!(
@@ -1599,14 +1638,12 @@ pub fn export_one_attachment(
         .and_then(|result| result.as_ref().ok())
         .map(String::as_bytes);
     let base_normalized = normalize_attachment_filename(&att.original_filename);
-    let normalized = collision_safe_attachment_filename(
+    let normalized = publish_collision_safe_attachment(
         &message_dir,
         &base_normalized,
         &att.bytes,
         extracted_text,
     )?;
-    let attachment_path = safe_join(&message_dir, &normalized)?;
-    backup::write_atomic(&attachment_path, &att.bytes)?;
 
     let mut extracted_text_filename = None;
     let mut extraction_error = None;
@@ -1614,8 +1651,7 @@ pub fn export_one_attachment(
         match result {
             Ok(text) => {
                 let txt_name = format!("{normalized}.txt");
-                let txt_path = safe_join(&message_dir, &txt_name)?;
-                backup::write_atomic(&txt_path, text.as_bytes())?;
+                ensure_published_or_matching(&message_dir, &txt_name, text.as_bytes())?;
                 extracted_text_filename = Some(txt_name);
             }
             Err(err) => {
@@ -1654,13 +1690,31 @@ pub fn export_one_attachment(
     })
 }
 
-/// Assign a deterministic, hash-suffixed filename when separate attachments
-/// normalize to the same basename. Existing identical bytes stay idempotent;
-/// different evidence is never overwritten. When text extraction is enabled,
-/// reserve the sibling `.txt` name before writing the raw attachment so an
-/// ordinary attachment cannot overwrite another attachment's extracted text.
+/// Publish under a deterministic, hash-suffixed filename when separate
+/// attachments normalize to the same basename. Existing identical bytes remain
+/// idempotent; a collision observed between the lookup and publish is retried
+/// without ever replacing the new target.
+fn publish_collision_safe_attachment(
+    message_dir: &SecureOutputDir,
+    normalized: &str,
+    bytes: &[u8],
+    extracted_text: Option<&[u8]>,
+) -> Result<String, EvidenceError> {
+    for _ in 0..5 {
+        let name =
+            collision_safe_attachment_filename(message_dir, normalized, bytes, extracted_text)?;
+        match publish_or_match(message_dir, &name, bytes)? {
+            PublishOutcome::Published | PublishOutcome::Matches => return Ok(name),
+            PublishOutcome::Conflict => continue,
+        }
+    }
+    Err(EvidenceError::QueryValidation(
+        "attachment filename collision changed during export".to_string(),
+    ))
+}
+
 fn collision_safe_attachment_filename(
-    message_dir: &Path,
+    message_dir: &SecureOutputDir,
     normalized: &str,
     bytes: &[u8],
     extracted_text: Option<&[u8]>,
@@ -1682,13 +1736,12 @@ fn collision_safe_attachment_filename(
         if name == ATTACHMENT_PROVENANCE_FILE || name == ATTACHMENT_SOURCE_NOTE_FILE {
             continue;
         }
-        let path = safe_join(message_dir, &name)?;
-        if !existing_evidence_file_matches_or_is_absent(&path, bytes)? {
+        if !existing_evidence_file_matches_or_is_absent(message_dir, &name, bytes)? {
             continue;
         }
         if let Some(text) = extracted_text {
-            let text_path = safe_join(message_dir, &format!("{name}.txt"))?;
-            if !existing_evidence_file_matches_or_is_absent(&text_path, text)? {
+            let text_name = format!("{name}.txt");
+            if !existing_evidence_file_matches_or_is_absent(message_dir, &text_name, text)? {
                 continue;
             }
         }
@@ -1699,16 +1752,54 @@ fn collision_safe_attachment_filename(
     ))
 }
 
-/// Treat a symlink or non-regular existing path as unavailable. Evidence export
-/// must not read through a local link just to decide whether a filename is safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublishOutcome {
+    Published,
+    Matches,
+    Conflict,
+}
+
+fn publish_or_match(
+    message_dir: &SecureOutputDir,
+    name: &str,
+    expected: &[u8],
+) -> Result<PublishOutcome, EvidenceError> {
+    match message_dir.write_new_atomic(name, expected) {
+        Ok(()) => Ok(PublishOutcome::Published),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            match message_dir.read_regular(name)? {
+                Some(existing) if existing == expected => Ok(PublishOutcome::Matches),
+                Some(_) | None => Ok(PublishOutcome::Conflict),
+            }
+        }
+        Err(error) => Err(EvidenceError::Io(error)),
+    }
+}
+
+fn ensure_published_or_matching(
+    message_dir: &SecureOutputDir,
+    name: &str,
+    expected: &[u8],
+) -> Result<(), EvidenceError> {
+    match publish_or_match(message_dir, name, expected)? {
+        PublishOutcome::Published | PublishOutcome::Matches => Ok(()),
+        PublishOutcome::Conflict => Err(EvidenceError::QueryValidation(format!(
+            "evidence output already exists with different bytes: {name}"
+        ))),
+    }
+}
+
+/// Treat a symlink or non-regular existing path as unavailable. The directory
+/// descriptor and O_NOFOLLOW prevent a symlink swap from being read here.
 fn existing_evidence_file_matches_or_is_absent(
-    path: &Path,
+    message_dir: &SecureOutputDir,
+    name: &str,
     expected: &[u8],
 ) -> Result<bool, EvidenceError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(fs::read(path)? == expected),
-        Ok(_) => Ok(false),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+    match message_dir.read_regular(name) {
+        Ok(Some(existing)) => Ok(existing == expected),
+        Ok(None) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(false),
         Err(error) => Err(EvidenceError::Io(error)),
     }
 }
@@ -1724,18 +1815,14 @@ pub fn write_attachment_message_notes(
         return Ok(());
     }
     let dir_name = attachment_message_dir(&source.folder, source.uidvalidity, source.uid);
-    let message_dir = safe_join(out_root, &dir_name)?;
-    fs::create_dir_all(&message_dir)?;
+    let message_dir = SecureOutputDir::open_or_create(out_root)?.open_or_create_child(&dir_name)?;
 
     let provenances: Vec<&AttachmentProvenance> = written.iter().map(|w| &w.provenance).collect();
     let json = serde_json::to_vec_pretty(&provenances)?;
-    backup::write_atomic(&safe_join(&message_dir, ATTACHMENT_PROVENANCE_FILE)?, &json)?;
+    ensure_published_or_matching(&message_dir, ATTACHMENT_PROVENANCE_FILE, &json)?;
 
     let note = render_attachment_source_note(source, written);
-    backup::write_atomic(
-        &safe_join(&message_dir, ATTACHMENT_SOURCE_NOTE_FILE)?,
-        note.as_bytes(),
-    )?;
+    ensure_published_or_matching(&message_dir, ATTACHMENT_SOURCE_NOTE_FILE, note.as_bytes())?;
     Ok(())
 }
 
@@ -1811,34 +1898,6 @@ pub fn bounded_excerpt(text: &str) -> String {
         excerpt.push('…');
     }
     excerpt
-}
-
-/// Join `child` under `root`, rejecting absolute paths, traversal, and any
-/// existing symlink component. Returns a path guaranteed to be inside `root`.
-fn safe_join(root: &Path, child: &str) -> Result<PathBuf, EvidenceError> {
-    if child.is_empty()
-        || child.contains('\0')
-        || child.starts_with('/')
-        || child.starts_with('\\')
-        || child.contains("..")
-        || Path::new(child).is_absolute()
-    {
-        return Err(EvidenceError::InvalidBundle {
-            path: root.join(child),
-            reason: format!("unsafe path component {child:?}"),
-        });
-    }
-    let joined = root.join(child);
-    // Reject if any existing component up to here is a symlink.
-    if let Ok(meta) = fs::symlink_metadata(&joined)
-        && meta.file_type().is_symlink()
-    {
-        return Err(EvidenceError::InvalidBundle {
-            path: joined,
-            reason: "refusing to write through a symlink".to_string(),
-        });
-    }
-    Ok(joined)
 }
 
 #[cfg(test)]
@@ -2363,6 +2422,21 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn bundle_export_rejects_a_symlinked_parent_without_writing_outside() {
+        let base = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = base.path().join("swap");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        let bytes = sample_rfc822();
+        let manifest = sample_manifest_for(&bytes);
+        let messages = HashMap::from([(manifest.messages[0].rel_path.clone(), bytes)]);
+
+        assert!(write_evidence_bundle(&link.join("bundle"), &manifest, &messages).is_err());
+        assert!(!outside.path().join("bundle").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn verify_rejects_symlinked_evidence_eml_without_following() {
         let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
@@ -2561,6 +2635,47 @@ mod tests {
             written[0].provenance.normalized_filename,
             written[0].provenance.original_filename
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_export_rejects_symlinked_message_dir_without_touching_external_target() {
+        let out = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = AttachmentSourceMessage {
+            account_email: "user@example.com".to_string(),
+            folder: "INBOX".to_string(),
+            uidvalidity: 1,
+            uid: 2,
+            message_id: None,
+            rfc822_date: None,
+            from_addr: vec![],
+            to_addr: vec![],
+            cc_addr: vec![],
+            subject: None,
+        };
+        let dir_name = attachment_message_dir(&source.folder, source.uidvalidity, source.uid);
+        std::os::unix::fs::symlink(outside.path(), out.path().join(dir_name)).unwrap();
+        let attachment = ExtractedAttachment {
+            original_filename: "evidence.txt".to_string(),
+            bytes: b"canonical attachment".to_vec(),
+            mime_type: Some("text/plain".to_string()),
+            content_id: None,
+        };
+
+        assert!(
+            export_one_attachment(
+                out.path(),
+                &source,
+                &attachment,
+                false,
+                "2026-06-17T00:00:00Z",
+                "envelope",
+                "1.1.8",
+            )
+            .is_err()
+        );
+        assert!(!outside.path().join("evidence.txt").exists());
     }
 
     #[test]

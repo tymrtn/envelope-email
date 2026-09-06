@@ -1023,6 +1023,7 @@ dependencies = [
  "hickory-resolver",
  "imap-proto",
  "lettre",
+ "libc",
  "mail-builder",
  "mail-parser",
  "regex",

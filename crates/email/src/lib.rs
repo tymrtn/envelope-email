@@ -29,6 +29,7 @@ pub mod outbound;
 pub mod provider;
 pub mod reply;
 pub mod rules;
+mod secure_output;
 pub mod send_policy;
 pub mod sent_proof;
 pub mod sieve;

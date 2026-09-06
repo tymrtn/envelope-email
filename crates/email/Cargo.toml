@@ -19,6 +19,7 @@ thiserror.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+libc = "0.2"
 
 # IMAP/SMTP
 async-imap.workspace = true
