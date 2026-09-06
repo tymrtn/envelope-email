@@ -2,7 +2,10 @@
 // Licensed under FSL-1.1-ALv2 (see LICENSE)
 
 use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -112,6 +115,83 @@ fn set_policy(home: &std::path::Path, name: &str, actions: &str, ceiling: &str) 
         None,
     );
     assert!(out.status.success(), "policy set failed");
+}
+
+fn set_policy_with_folders(home: &std::path::Path, name: &str, actions: &str, folders: &str) {
+    let out = run_cli(
+        home,
+        &[
+            "agent",
+            "policy",
+            "set",
+            name,
+            "--allow-accounts",
+            "*",
+            "--allow-folders",
+            folders,
+            "--allow-actions",
+            actions,
+            "--send-mode-ceiling",
+            "draft-only",
+        ],
+        None,
+    );
+    assert!(out.status.success(), "policy set failed");
+}
+
+/// A local IMAP listener that reports whether MCP opened a socket. It remains
+/// live until dropped so parallel test scheduling cannot turn a policy result
+/// into a connection-refused false negative.
+struct ImapConnectionProbe {
+    connected: Receiver<bool>,
+    stop: Sender<()>,
+}
+
+impl Drop for ImapConnectionProbe {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+    }
+}
+
+/// Point the test account at a local listener. A successful connection is
+/// immediately closed so execution can reach the handler boundary without
+/// contacting a real mailbox.
+fn imap_connection_probe(home: &std::path::Path) -> ImapConnectionProbe {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind IMAP probe");
+    listener
+        .set_nonblocking(true)
+        .expect("make IMAP probe nonblocking");
+    let port = listener.local_addr().expect("IMAP probe address").port();
+    let db = envelope_email_store::Database::open(&db_path(home)).expect("open db");
+    db.conn()
+        .execute(
+            "UPDATE accounts SET imap_host = '127.0.0.1', imap_port = ?1",
+            [i64::from(port)],
+        )
+        .expect("point account at IMAP probe");
+
+    let (connected_tx, connected) = mpsc::channel();
+    let (stop, stop_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        loop {
+            match listener.accept() {
+                Ok((_stream, _addr)) => {
+                    let _ = connected_tx.send(true);
+                    return;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop_rx.recv_timeout(Duration::from_millis(10)).is_ok() {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    let _ = connected_tx.send(false);
+                    return;
+                }
+            }
+        }
+    });
+    ImapConnectionProbe { connected, stop }
 }
 
 /// Seed a draft record directly in the store and return its id, feeding
@@ -730,6 +810,127 @@ fn mcp_restrictive_policy_denies_tool_with_stable_code() {
     assert_eq!(payload["code"], "agent_policy_denied_action");
     // No recipient address may leak into the denial.
     assert!(!payload.to_string().contains("a@b.test"));
+}
+
+#[test]
+fn mcp_move_message_denies_disallowed_source_before_mailbox_action() {
+    let temp = tempfile::tempdir().expect("temp HOME");
+    let home = temp.path();
+    seed_account(home);
+    let (token, _id) = create_agent(home, "skippy");
+    set_policy_with_folders(home, "skippy", "move", "Archive");
+    let probe = imap_connection_probe(home);
+
+    let (payload, is_error) = tool_call(
+        home,
+        Some(&token),
+        "move_message",
+        json!({ "uid": 1, "from_folder": "Sensitive", "to_folder": "Archive" }),
+    );
+
+    assert!(is_error, "disallowed source must be refused: {payload}");
+    assert_eq!(payload["code"], "agent_policy_denied_folder");
+    assert!(
+        !matches!(
+            probe.connected.recv_timeout(Duration::from_secs(1)),
+            Ok(true)
+        ),
+        "a denied source must not reach the source mailbox: {payload}"
+    );
+}
+
+#[test]
+fn mcp_move_message_denies_disallowed_destination() {
+    let temp = tempfile::tempdir().expect("temp HOME");
+    let home = temp.path();
+    seed_account(home);
+    let (token, _id) = create_agent(home, "skippy");
+    set_policy_with_folders(home, "skippy", "move", "Source");
+    let probe = imap_connection_probe(home);
+
+    let (payload, is_error) = tool_call(
+        home,
+        Some(&token),
+        "move_message",
+        json!({ "uid": 1, "from_folder": "Source", "to_folder": "Archive" }),
+    );
+
+    assert!(
+        is_error,
+        "disallowed destination must be refused: {payload}"
+    );
+    assert_eq!(payload["code"], "agent_policy_denied_folder");
+    assert!(
+        !matches!(
+            probe.connected.recv_timeout(Duration::from_secs(1)),
+            Ok(true)
+        ),
+        "a denied destination must not reach the mailbox: {payload}"
+    );
+}
+
+#[test]
+fn mcp_move_message_with_both_folders_allowed_reaches_execution() {
+    let temp = tempfile::tempdir().expect("temp HOME");
+    let home = temp.path();
+    seed_account(home);
+    let (token, _id) = create_agent(home, "skippy");
+    set_policy_with_folders(home, "skippy", "move", "Source,Archive");
+    let probe = imap_connection_probe(home);
+
+    let (payload, is_error) = tool_call(
+        home,
+        Some(&token),
+        "move_message",
+        json!({ "uid": 1, "from_folder": "Source", "to_folder": "Archive" }),
+    );
+
+    assert!(
+        is_error,
+        "the closed test IMAP socket must abort execution: {payload}"
+    );
+    assert_ne!(
+        payload["code"], "agent_policy_denied_folder",
+        "both allowed folders must clear policy: {payload}"
+    );
+    assert!(
+        probe
+            .connected
+            .recv_timeout(Duration::from_secs(5))
+            .expect("IMAP probe result"),
+        "both allowed folders must preserve move execution: {payload}"
+    );
+}
+
+#[test]
+fn mcp_move_message_anonymous_behavior_reaches_execution_unchanged() {
+    let temp = tempfile::tempdir().expect("temp HOME");
+    let home = temp.path();
+    seed_account(home);
+    let probe = imap_connection_probe(home);
+
+    let (payload, is_error) = tool_call(
+        home,
+        None,
+        "move_message",
+        json!({ "uid": 1, "from_folder": "Sensitive", "to_folder": "Archive" }),
+    );
+
+    assert!(
+        is_error,
+        "the closed test IMAP socket must abort execution: {payload}"
+    );
+    assert_ne!(
+        payload["code"], "agent_policy_denied_folder",
+        "anonymous compatibility mode must remain unfiltered by agent policy: {payload}"
+    );
+    assert!(
+        probe
+            .connected
+            .recv_timeout(Duration::from_secs(5))
+            .expect("IMAP probe result"),
+        "anonymous move must retain its existing execution path: {payload}"
+    );
 }
 
 #[test]

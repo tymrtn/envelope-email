@@ -153,9 +153,10 @@ fn wrap_untrusted(value: Value) -> Value {
 
 // ── Tool dispatch ───────────────────────────────────────────────────
 
-/// The folder-selecting parameter for a tool call, used for policy folder checks.
-/// `move_message` names its target folder `to_folder`; the rest use `folder`.
-/// Tools without any folder concept return `None` (folder check skipped).
+/// The destination or single folder selecting parameter for a tool call, used
+/// for policy folder checks. `move_message` also authorizes its source via
+/// [`move_source_folder`] because moving is a multi-folder operation. Tools
+/// without any folder concept return `None` (folder check skipped).
 fn tool_folder<'a>(tool_name: &str, params: &'a Value) -> Option<&'a str> {
     match tool_name {
         "move_message" => params.get("to_folder").and_then(|v| v.as_str()),
@@ -169,6 +170,16 @@ fn tool_folder<'a>(tool_name: &str, params: &'a Value) -> Option<&'a str> {
         | "send" => None,
         _ => params.get("folder").and_then(|v| v.as_str()),
     }
+}
+
+/// The source folder used by `handle_move`, including its implicit INBOX
+/// default. This must stay in lockstep with the handler so an identity-bound
+/// caller cannot authorize one source and dispatch another.
+fn move_source_folder(params: &Value) -> &str {
+    params
+        .get("from_folder")
+        .and_then(|value| value.as_str())
+        .unwrap_or("INBOX")
 }
 
 /// Read-only discovery tools that are ALWAYS authorized, even under a
@@ -255,6 +266,15 @@ fn authorize_tool_call_with_db(
     };
     let account = authoritative_policy_account(db, tool_name, params)?;
     let folder = tool_folder(tool_name, params);
+
+    // A move reads and mutates its source as well as its destination. Check the
+    // exact source that `handle_move` will use before authorizing the target or
+    // opening mailbox credentials, so an allowed destination cannot bypass a
+    // denied source-folder boundary.
+    if tool_name == "move_message" {
+        ctx.authorize_tool(tool_name, &account, Some(move_source_folder(params)))
+            .map_err(|denial| denial.to_json().to_string())?;
+    }
 
     // rules_run authorizes under `rules.read` for its default dry-run preview and
     // only escalates to `rules.run` when the caller explicitly opts into a real
@@ -1739,10 +1759,7 @@ async fn handle_move(
         .get("to_folder")
         .and_then(|v| v.as_str())
         .ok_or("to_folder is required")?;
-    let from_folder = params
-        .get("from_folder")
-        .and_then(|v| v.as_str())
-        .unwrap_or("INBOX");
+    let from_folder = move_source_folder(params);
     let account_arg = params.get("account").and_then(|v| v.as_str());
 
     let (db, creds) = crate::commands::common::setup_credentials(account_arg, backend)
