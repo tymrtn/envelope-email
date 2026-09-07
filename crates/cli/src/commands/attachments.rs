@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use envelope_email_store::CredentialBackend;
+use envelope_email_transport::secure_output::SecureOutputDir;
 use envelope_email_transport::smtp::Attachment;
 
 use super::common::setup_credentials;
@@ -116,36 +117,55 @@ fn reject_symlink_components(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn implicit_download_path(filename: &str) -> Result<PathBuf> {
-    let base =
-        std::env::current_dir().context("resolve current directory for attachment download")?;
-    implicit_download_path_from(&base, filename)
+fn open_implicit_download_dir(
+    base_dir: SecureOutputDir,
+    base: &Path,
+    filename: &str,
+) -> Result<(SecureOutputDir, String, PathBuf)> {
+    // Retain the configured base and download-root descriptors before creating
+    // the attachment-controlled final basename. Do not reopen `root/basename`
+    // by pathname: either component could otherwise be replaced with a link
+    // between validation and file creation.
+    let download_dir = base_dir
+        .open_or_create_child(DEFAULT_DOWNLOAD_DIR)
+        .with_context(|| format!("open attachment download root under {}", base.display()))?;
+    let basename = envelope_email_transport::ingress::normalize_attachment_filename(filename);
+    let destination = base.join(DEFAULT_DOWNLOAD_DIR).join(&basename);
+    Ok((download_dir, basename, destination))
 }
 
-fn implicit_download_path_from(base: &Path, filename: &str) -> Result<PathBuf> {
-    reject_symlink_components(base)?;
-    let root = base.join(DEFAULT_DOWNLOAD_DIR);
-    // Do not use create_dir_all here: it follows an existing leaf symlink
-    // before we get a chance to reject it. The implicit root is one known child
-    // of an existing operator-selected working directory.
-    match fs::create_dir(&root) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => {
-            return Err(error).with_context(|| format!("create download root {}", root.display()));
-        }
-    }
-    reject_symlink_components(&root)?;
-    let meta =
-        fs::metadata(&root).with_context(|| format!("inspect download root {}", root.display()))?;
-    if !meta.is_dir() {
-        bail!(
-            "attachment download root is not a directory: {}",
-            root.display()
-        );
-    }
-    let basename = envelope_email_transport::ingress::normalize_attachment_filename(filename);
-    Ok(root.join(basename))
+#[cfg(test)]
+fn open_implicit_download_dir_from(
+    base: &Path,
+    filename: &str,
+) -> Result<(SecureOutputDir, String, PathBuf)> {
+    let base_dir = SecureOutputDir::open_or_create(base)
+        .with_context(|| format!("open attachment download base {}", base.display()))?;
+    open_implicit_download_dir(base_dir, base, filename)
+}
+
+#[cfg(test)]
+fn write_implicit_download_from(base: &Path, filename: &str, bytes: &[u8]) -> Result<PathBuf> {
+    let (download_dir, basename, destination) = open_implicit_download_dir_from(base, filename)?;
+    download_dir
+        .write_new_atomic(&basename, bytes)
+        .with_context(|| format!("refusing to overwrite attachment output {basename}"))?;
+
+    // This path is presentation only; publication above was descriptor-relative.
+    Ok(destination)
+}
+
+fn write_implicit_download(filename: &str, bytes: &[u8]) -> Result<PathBuf> {
+    let base =
+        std::env::current_dir().context("resolve current directory for attachment download")?;
+    let base_dir = SecureOutputDir::open_current()
+        .context("open current directory for attachment download")?;
+    let (download_dir, basename, destination) =
+        open_implicit_download_dir(base_dir, &base, filename)?;
+    download_dir
+        .write_new_atomic(&basename, bytes)
+        .with_context(|| format!("refusing to overwrite attachment output {basename}"))?;
+    Ok(destination)
 }
 
 fn explicit_download_path(output: &str) -> Result<PathBuf> {
@@ -250,14 +270,18 @@ pub async fn run_download(
             .await
             .context("failed to download attachment")?;
 
-    // An implicit destination is always a sanitized basename under a dedicated
-    // root. `--output` is an explicit operator choice but still gets no-symlink,
-    // create-new semantics so it cannot overwrite or follow an existing link.
+    // An implicit destination is a sanitized basename published
+    // descriptor-relatively under a dedicated root. `--output` is an explicit
+    // operator path and only receives its local no-symlink/create-new checks;
+    // it does not use the implicit-root guarantee.
     let dest = match output {
-        Some(p) => explicit_download_path(p)?,
-        None => implicit_download_path(&name)?,
+        Some(p) => {
+            let dest = explicit_download_path(p)?;
+            write_new_download(&dest, &bytes)?;
+            dest
+        }
+        None => write_implicit_download(&name, &bytes)?,
     };
-    write_new_download(&dest, &bytes)?;
 
     if json {
         let info = serde_json::json!({
@@ -303,14 +327,57 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn implicit_download_refuses_a_symlinked_root_before_writing() {
+    fn implicit_download_refuses_a_symlinked_root_target_before_writing() {
         let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let root = dir.path().join(DEFAULT_DOWNLOAD_DIR);
         std::os::unix::fs::symlink(outside.path(), &root).unwrap();
 
-        assert!(implicit_download_path_from(dir.path(), "report.pdf").is_err());
+        assert!(write_implicit_download_from(dir.path(), "report.pdf", b"payload").is_err());
         assert!(!outside.path().join("report.pdf").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn implicit_download_retains_root_descriptor_after_parent_path_swap() {
+        let base = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = base.path().join(DEFAULT_DOWNLOAD_DIR);
+        fs::create_dir(&root).unwrap();
+
+        let (download_dir, basename, _) =
+            open_implicit_download_dir_from(base.path(), "report.pdf").unwrap();
+        let retained_root = base.path().join("retained-download-root");
+        fs::rename(&root, &retained_root).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &root).unwrap();
+
+        download_dir
+            .write_new_atomic(&basename, b"payload")
+            .unwrap();
+
+        assert_eq!(
+            fs::read(retained_root.join("report.pdf")).unwrap(),
+            b"payload"
+        );
+        assert!(!outside.path().join("report.pdf").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn implicit_download_succeeds_under_tmp_default_root() {
+        let base = tempfile::Builder::new()
+            .prefix("envelope-attachment-download-")
+            .tempdir_in("/tmp")
+            .unwrap();
+
+        let destination =
+            write_implicit_download_from(base.path(), "report.pdf", b"payload").unwrap();
+
+        assert_eq!(
+            destination,
+            base.path().join(DEFAULT_DOWNLOAD_DIR).join("report.pdf")
+        );
+        assert_eq!(fs::read(destination).unwrap(), b"payload");
     }
 
     #[test]

@@ -26,14 +26,21 @@ use std::path::{Component, Path};
 
 #[cfg(unix)]
 #[derive(Debug)]
-pub(crate) struct SecureOutputDir {
+pub struct SecureOutputDir {
     fd: OwnedFd,
 }
 
 #[cfg(unix)]
 impl SecureOutputDir {
+    /// Retain a descriptor for the process working directory. Descendants can
+    /// then be opened without re-resolving a pathname that an attacker could
+    /// swap after validation.
+    pub fn open_current() -> io::Result<Self> {
+        Self::open_initial(b".")
+    }
+
     /// Open `path`, creating missing components without ever following one.
-    pub(crate) fn open_or_create(path: &Path) -> io::Result<Self> {
+    pub fn open_or_create(path: &Path) -> io::Result<Self> {
         validate_output_path(path)?;
         let (physical_root, descendants) = canonical_existing_prefix(path)?;
         let mut dir = Self::open_initial(physical_root.as_os_str().as_bytes())?;
@@ -56,7 +63,7 @@ impl SecureOutputDir {
         owned_fd(fd)
     }
 
-    pub(crate) fn open_or_create_child(&self, name: &str) -> io::Result<Self> {
+    pub fn open_or_create_child(&self, name: &str) -> io::Result<Self> {
         self.open_or_create_child_os(std::ffi::OsStr::new(name))
     }
 
@@ -82,7 +89,7 @@ impl SecureOutputDir {
     /// Create a random exclusive temp file, fsync it, then atomically publish it
     /// without replacing any existing final name. Both operations use this
     /// directory's descriptor rather than a pathname that can be swapped.
-    pub(crate) fn write_new_atomic(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+    pub fn write_new_atomic(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
         validate_file_name(name)?;
         let final_name = cstring(name.as_bytes())?;
         for _ in 0..32 {
@@ -151,7 +158,7 @@ impl SecureOutputDir {
 
     /// Read an existing regular file without following a symlink. `None` means
     /// the name is absent; non-regular files are rejected rather than read.
-    pub(crate) fn read_regular(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
+    pub fn read_regular(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
         validate_file_name(name)?;
         let name = cstring(name.as_bytes())?;
         let fd = unsafe {
@@ -291,27 +298,31 @@ fn validate_file_name(name: &str) -> io::Result<()> {
 
 #[cfg(not(unix))]
 #[derive(Debug)]
-pub(crate) struct SecureOutputDir;
+pub struct SecureOutputDir;
 
 #[cfg(not(unix))]
 impl SecureOutputDir {
-    pub(crate) fn open_or_create(_: &Path) -> io::Result<Self> {
+    pub fn open_current() -> io::Result<Self> {
+        Self::open_or_create(Path::new("."))
+    }
+
+    pub fn open_or_create(_: &Path) -> io::Result<Self> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "race-safe evidence export requires Unix descriptor-relative filesystem APIs",
         ))
     }
 
-    pub(crate) fn open_or_create_child(&self, _: &str) -> io::Result<Self> {
+    pub fn open_or_create_child(&self, _: &str) -> io::Result<Self> {
         Self::open_or_create(Path::new(""))
     }
 
-    pub(crate) fn write_new_atomic(&self, _: &str, _: &[u8]) -> io::Result<()> {
+    pub fn write_new_atomic(&self, _: &str, _: &[u8]) -> io::Result<()> {
         Self::open_or_create(Path::new(""))?;
         unreachable!()
     }
 
-    pub(crate) fn read_regular(&self, _: &str) -> io::Result<Option<Vec<u8>>> {
+    pub fn read_regular(&self, _: &str) -> io::Result<Option<Vec<u8>>> {
         Self::open_or_create(Path::new(""))?;
         unreachable!()
     }
