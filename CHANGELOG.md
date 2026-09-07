@@ -5,6 +5,28 @@ All notable changes to Envelope Email are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-09-06
+
+### Security and agent boundaries
+
+- **Inbound trust:** agent-facing inbound mail, watch, event, rule, OTP, and
+  contextual draft outputs carry explicit external-content provenance without
+  blocking normal inbox workflows. Inbound-only history no longer establishes
+  favorable relationship facts, and uncorroborated header-only thread links stay
+  visible but untrusted for relationship context.
+- **Agent control plane:** production sends use the required trusted Governor
+  configuration; MCP requires an identity by default, enforces canonical account
+  and source/destination folder policy, and dashboard responses resist framing
+  and broad query-token exposure.
+- **Hostile attachments and evidence:** safe implicit download locations,
+  bounded raw/MIME/DOCX processing, no active inline attachments, collision-safe
+  evidence names, and descriptor-safe no-follow evidence export protect normal
+  mailbox work from hostile file inputs.
+- **OTP automation:** JSON consumers require an explicit account and narrow
+  sender binding, stabilize candidate collection, and report ambiguity rather
+  than consuming the first matching message. This is a versioned agent contract
+  change (`envelope.agent_contract.v3`).
+
 ## [1.1.7] — 2026-09-01
 
 ### Changed
