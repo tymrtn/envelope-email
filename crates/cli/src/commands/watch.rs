@@ -15,6 +15,7 @@ use futures_util::StreamExt;
 use tracing::{info, warn};
 
 use super::common::setup_credentials;
+use super::provenance;
 
 #[tokio::main]
 pub async fn run(
@@ -365,7 +366,10 @@ fn route_matches(route: &EventRoute, event_type: &str) -> bool {
 }
 
 fn emit_event(event: &Event, webhook: Option<&str>, http_client: Option<&reqwest::Client>) {
-    let json_line = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+    // A watch is notification, not an instruction channel. The legacy event
+    // fields are retained inside the additive safe event representation.
+    let json_line =
+        serde_json::to_string(&provenance::event_json(event)).unwrap_or_else(|_| "{}".to_string());
     println!("{json_line}");
 
     if let (Some(url), Some(client)) = (webhook, http_client) {
@@ -512,6 +516,12 @@ mod tests {
         );
 
         let serialized = serde_json::to_string(&event).unwrap();
+        let agent_event = provenance::event_json(&event);
+        assert_eq!(agent_event["trust"]["schema"], "envelope.inbound-trust.v1");
+        assert_eq!(
+            agent_event["untrusted_content"]["snippet"],
+            "Use code *** to finish signing in."
+        );
         assert!(!serialized.contains("482910"));
         assert_eq!(
             event.subject.as_deref(),

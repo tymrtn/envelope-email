@@ -1418,6 +1418,26 @@ pub(crate) fn draft_envelope_json(draft: &Draft) -> serde_json::Value {
             "preview_word_limit": meta.get("preview_word_limit").cloned().unwrap_or_else(|| serde_json::json!(DEFAULT_PREVIEW_WORD_LIMIT)),
             "attachments_forwarded": meta.get("attachments_forwarded").and_then(|v| v.as_bool()).unwrap_or(false),
             "full_content_preserved": true,
+            "segments": [
+                {
+                    "kind": "agent_authored",
+                    "provenance": "agent_authored_draft",
+                    "text": get("agent_body_text"),
+                    "html": get("agent_body_html"),
+                },
+                {
+                    "kind": "external_quoted_context",
+                    "provenance": "external_inbound_email",
+                    "trust": {
+                        "schema": "envelope.inbound-trust.v1",
+                        "content_role": "untrusted_data",
+                        "instructions_authoritative": false,
+                    },
+                    "included": quote_included,
+                    "preview_text": get("preview_text"),
+                    "preview_truncated": meta.get("preview_truncated").and_then(|v| v.as_bool()).unwrap_or(false),
+                }
+            ],
         },
         "attachments": attachment_summaries(&draft.attachments),
         "storage": {

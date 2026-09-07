@@ -1,6 +1,6 @@
 # Envelope Agent Contract
 
-Envelope exposes a versioned agent contract as `envelope.agent_contract.v2`.
+Envelope exposes a versioned agent contract as `envelope.agent_contract.v3`.
 
 Generate the live contract:
 
@@ -17,13 +17,21 @@ envelope contract --surface inbox
 The checked-in schema snapshot is:
 
 ```text
-docs/schemas/envelope.agent_contract.v2.json
+docs/schemas/envelope.agent_contract.v3.json
 ```
 
-The prior `envelope.agent_contract.v1` snapshot is retained unchanged at
-`docs/schemas/envelope.agent_contract.v1.json` as historical documentation.
+The prior `envelope.agent_contract.v2` snapshot is retained unchanged at
+`docs/schemas/envelope.agent_contract.v2.json` as historical documentation.
 
-## v2 migration (breaking)
+## v3 migration (breaking)
+
+v3 is a breaking contract change for unattended OTP retrieval:
+
+- **Bound OTP JSON automation.** `envelope code --json` now **requires** `--account` for the expected mailbox and `--from` as an exact mailbox address or fully-qualified domain. It rejects missing, empty, wildcard, display-name, and fragment sender filters with `error: "automation_binding_required"` before credentials or IMAP are opened. A subject filter may add correlation but cannot replace the account/sender binding.
+- **Stabilized, ambiguity-safe result.** JSON collection continues for a fixed 5-second stabilization window after the first candidate and includes candidates found in subsequent polls. More than one candidate returns `{error:"ambiguous_matches", candidate_count}` and exits nonzero; a timeout before the window completes returns `{error:"timeout", waited_seconds}` and never releases the first candidate.
+- **Header identity is not authentication.** Returned `from` and `subject` are untrusted inbound header/content fields accompanied by the `trust` block. Envelope makes no claim that the sender is authenticated. Interactive non-JSON `envelope code` remains a low-friction legacy convenience and does not offer this JSON automation guarantee.
+
+## v2 migration (historical)
 
 v2 is a breaking contract change for the outbound send surfaces:
 
@@ -36,18 +44,19 @@ v2 is a breaking contract change for the outbound send surfaces:
 - **`mailto:` unsubscribe is attribution-gated.** The `mailto:` compliance unsubscribe is a real SMTP surface, so `envelope unsubscribe` accepts repeatable `--attr` keys and **requires** a non-empty valid declaration before Governor/SMTP; a missing/invalid declaration fails closed with the canonical attribution error (no wire send). HTTPS one-click unsubscribe is not an SMTP send and is unaffected.
 - **Additive success `attribution` block.** Every **successful** outbound result (immediate `send`/`reply`/`send_draft`, queued/scheduled acceptance, and the `mailto:` unsubscribe) carries an additive sanitized `attribution` object: `protocol`, `catalog`, `catalog_version`, `attribution_state`, `declared_attrs`, `derived_attrs`, `governor_attrs`, `accepted_redundant`, `rejected_attrs`, and a `governor` sub-object `{decision, route}` — `null` on queued/scheduled acceptance, where `governor_decision_pending` marks that the real decision runs at the sweep. It never contains a score, weight, threshold, body, raw recipient, secret, or attachment byte. New optional field, backward-compatible.
 - Generic `{code, reason}` error handling is unaffected; the `governor_blocked` and `governor_unavailable` codes and their meanings are unchanged (with an additive `route ∈ {review, deny}`).
+- **Inbound trust/provenance (additive).** CLI, MCP, watch and webhook JSON carrying inbound mail expose `trust.schema = "envelope.inbound-trust.v1"`, `origin = "external_inbound_email"`, `content_role = "untrusted_data"`, and `instructions_authoritative = false`. Existing fields remain for compatibility. Webhook events additionally duplicate attacker-controlled subject/snippet/payload under `untrusted_content`; ordinary external mail remains a normal event. Reply/forward drafts split `content.segments` into `agent_authored` and explicitly untrusted `external_quoted_context`. **OTP JSON automation** requires an explicit `--account` plus `--from` as an exact mailbox address or fully-qualified domain; empty, display-name, wildcard, or fragment sender inputs return `error: "automation_binding_required"` before credentials or IMAP are opened. It collects all matching candidates for a fixed 5-second stabilization window across polling iterations and fails closed with `{error:"ambiguous_matches", candidate_count}` if more than one arrives. A timeout before that window completes returns `{error:"timeout", waited_seconds}`. `from` and `subject` are untrusted message header/content fields, **not authenticated sender identity**. Interactive non-JSON `code` output remains a low-friction legacy convenience and does not provide the JSON automation collection guarantee. Relationship facts use curated contacts and outbound-confirmed correspondence only; inbound-only messages and header-only links do not create favorable facts.
 
 ## Compatibility rules
 
-- Existing command `--json` output shapes are not changed by the contract export (except the deliberate v2 score removal noted above).
-- Optional additions are compatible within `envelope.agent_contract.v2`.
+- Existing command `--json` output shapes are not changed by the contract export except for documented breaking migrations (v2 outbound attribution and v3 OTP JSON binding/stabilization).
+- Optional additions are compatible within `envelope.agent_contract.v3`.
 - Draft/reply/forward creation and draft edits support optional `--attach` paths. Attachment bytes are snapshotted into draft storage for review/send continuity, but contract/JSON output exposes only non-secret summaries (`filename`, `content_type`, `size`). Draft edits also support removing named attachments or clearing all attachments. Forwarding original source-message attachments is explicit via `draft forward --include-attachments`; it is not the default.
 - Removals, renames, required-field changes, or type changes require a new schema id.
 - MCP tool input schemas are derived from `crates/cli/src/commands/contract.rs` so CLI, MCP, Hermes, and Codex advertise the same surface.
 
 ## Surfaces
 
-The v1 contract covers:
+The v3 contract covers:
 
 - inbox
 - read
@@ -128,7 +137,7 @@ MCP defaults agent send/reply flows to `draft-only`. Denials use stable JSON cod
 
 Allowed actual-send paths do **not** transmit immediately by default. They queue into the outbox/scheduled-send mechanism with a cooldown (`send_after`, default 60 seconds; override via `cooldown_seconds` or `ENVELOPE_SEND_COOLDOWN_SECONDS`). Immediate transmission is an explicit emergency bypass only: `send_now`/`--send-now` or `cooldown_seconds=0` plus `confirm_send_now`/`--confirm-send-now`; missing confirmation returns `immediate_send_requires_confirmation` and sends nothing.
 
-Before any real SMTP transmission — both confirmed immediate bypasses and due outbox/scheduled sends — Envelope runs the Governor gate using **blind attribution**: Envelope derives the contextual attribute keys the send exhibits (thread/relationship/domain/recipient/content/stakes signals) and Governor opaquely scores/routes them against its `envelope` catalog, returning `allow`/`review`/`deny`. Envelope never reconstructs or duplicates Governor's weights or thresholds. **Unified send-claim lifecycle (owner leases).** Every actual-send surface — the scheduled sweep, CLI `draft send`, and MCP `send_draft` — acquires the **same exclusive durable `sending` claim** before any Governor/SMTP work: a single compare-and-set on id + revision + `draft` status that also mints an **opaque owner lease token** (additive `operation_token` column; pre-upgrade rows carry NULL and stay inert). Exactly one actor can hold the lease; a competing sweep, an immediate send, a provider sync, a concurrent edit (revision bump), or any non-`draft` status loses the claim and refuses instead of double-sending or transmitting a stale snapshot. Raw numeric IMAP draft ids are first resolved to their local draft record (account + `imap_uid`); with no local record the send **fails closed** with an import/review instruction — there is no unclaimed fallback. Credentials are bound to `draft.account_id` before any claim or network side effect; a mismatched `--account` refuses up front. **Finalization requires the lease**: `mark_draft_sent`, release, and the anti-duplicate park all take id + token and match only the owner's `sending` row — a non-owner can neither finalize nor release, and the token is cleared on every terminal/released transition (a dead lease cannot act on a new claim).
+Before any real SMTP transmission — both confirmed immediate bypasses and due outbox/scheduled sends — Envelope runs the Governor gate using **blind attribution**: Envelope derives the contextual attribute keys the send exhibits (thread/relationship/domain/recipient/content/stakes signals) and Governor opaquely scores/routes them against its `envelope` catalog, returning `allow`/`review`/`deny`. SMTP-capable CLI, MCP, scheduled, and dashboard processes always use the trusted Governor executable in required mode; caller-controlled environment cannot disable the gate or substitute an executable, and a missing executable fails closed. Diagnostic gate fixtures must be non-SMTP. Envelope never reconstructs or duplicates Governor's weights or thresholds. **Unified send-claim lifecycle (owner leases).** Every actual-send surface — the scheduled sweep, CLI `draft send`, and MCP `send_draft` — acquires the **same exclusive durable `sending` claim** before any Governor/SMTP work: a single compare-and-set on id + revision + `draft` status that also mints an **opaque owner lease token** (additive `operation_token` column; pre-upgrade rows carry NULL and stay inert). Exactly one actor can hold the lease; a competing sweep, an immediate send, a provider sync, a concurrent edit (revision bump), or any non-`draft` status loses the claim and refuses instead of double-sending or transmitting a stale snapshot. Raw numeric IMAP draft ids are first resolved to their local draft record (account + `imap_uid`); with no local record the send **fails closed** with an import/review instruction — there is no unclaimed fallback. Credentials are bound to `draft.account_id` before any claim or network side effect; a mismatched `--account` refuses up front. **Finalization requires the lease**: `mark_draft_sent`, release, and the anti-duplicate park all take id + token and match only the owner's `sending` row — a non-owner can neither finalize nor release, and the token is cleared on every terminal/released transition (a dead lease cannot act on a new claim).
 
 Similarly, `modify_draft` acquires an exclusive durable `syncing` lease (token + prior status) **before any local or provider mutation**: the entire content + recipients + attachments + metadata edit lands as ONE atomic token-conditioned statement (no partially updated draft is ever observable or claimable), the sweep cannot claim mid-sync, generic mutation/UID/Message-ID primitives refuse `syncing` rows (only token-checked holder variants may write), and token ownership is rechecked immediately before the destructive old-copy delete and before the replacement APPEND. The old provider copy is deleted exact-Message-ID-verified *before* the APPEND (they share a Message-ID); if the old copy cannot be confirmably removed the APPEND is **skipped** — never a duplicate provider copy — with the local edit standing, storage metadata recording `stale_provider_copy_not_replaced`, and post-send exact cleanup removing the stale copy later. A crash strands the row inert as `syncing`; losing the sync claim is safe: whoever claimed the freshly-edited revision transmits the new local content.
 
@@ -142,7 +151,7 @@ Every bot-originated governed send resolves three explicit attribute sets, recor
 - `derived_attrs` — the host-observed structural/store facts Envelope derived.
 - `governor_attrs` — the validated union actually submitted to Governor.
 
-Plus `rejected_attrs` and `accepted_redundant` when relevant. **A bot must declare at least one factual attribute; host-derived facts never substitute.** The attribution precondition fails closed in `required` and `warn` modes **alike** — `warn` softens only a Governor *verdict* on an already-attributed send, never the attribution requirement, so a missing/invalid declaration on a bot-originated send is refused in `warn` exactly as in `required`. Only `off` disables the gate and the requirement.
+Plus `rejected_attrs` and `accepted_redundant` when relevant. **A bot must declare at least one factual attribute; host-derived facts never substitute.** The attribution precondition fails closed for every SMTP-capable Envelope process; no caller-controlled environment mode can waive it.
 
 Declarations are validated against Envelope's own observations **before Governor is spawned**:
 
@@ -196,9 +205,10 @@ Send surfaces should return proof handles for follow-up automation. Queued sends
 
 An MCP server process can run under a specific agent identity by setting `ENVELOPE_AGENT_TOKEN` to a bearer token created with `envelope agent create <name>`. The raw token is printed exactly once at creation and is never stored, logged, or recoverable (only a one-way hash and a display prefix are persisted).
 
-- **Startup semantics.** Unset token → the MCP server runs anonymously with unchanged defaults (existing users unaffected). Set + valid, non-revoked token → the agent's policy is enforced. Set + unknown or revoked token → MCP startup fails loud and never falls back to anonymous.
-- **Authorization.** Every MCP tool call is authorized before dispatch. The policy action is derived from the tool name (`tool_action_map` in the contract export; an unknown tool is denied). The account is the resolved `account` param (verbatim, case-sensitive; defaults to the configured default account when omitted), and the folder is checked when the tool selects one. Deny-by-default: an empty allow-list denies; a single `"*"` allows all.
-- **Denials.** Return the stable `{code, reason}` object as a normal MCP tool error — `agent_policy_denied_action`, `agent_policy_denied_account`, or `agent_policy_denied_folder` — never leaking recipient addresses, secrets, or body content.
+- **Startup semantics.** A valid, non-revoked `ENVELOPE_AGENT_TOKEN` is required. Unset/blank, unknown, or revoked tokens make MCP startup fail closed. Legacy anonymous full-mailbox MCP is available only through the conspicuous operator compatibility override `ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS=1`; generated `envelope mcp --config` output never sets it and instead includes a required token placeholder.
+- **Authoritative resource scope.** Identity-bound MCP resolves the actual account before policy evaluation. Draft reads, edits, and sends authorize from the draft's stored account id and reject a conflicting optional account parameter. Aggregate diagnostics (`accounts`, `watch_status`, and account-omitted snooze listing) fail closed for identity-bound sessions rather than exposing other accounts. The stable additional denial code is `agent_policy_account_required`.
+- **Authorization.** Every identity-bound MCP tool call is authorized before dispatch against the authoritative resolved account; caller-provided account aliases are never the policy subject. The policy action is derived from the tool name (`tool_action_map` in the contract export; an unknown tool is denied), and the folder is checked when the tool selects one. Deny-by-default: an empty allow-list denies; a single `"*"` allows all.
+- **Denials.** Return the stable `{code, reason}` object as a normal MCP tool error — `agent_policy_denied_action`, `agent_policy_denied_account`, `agent_policy_denied_folder`, or `agent_policy_account_required` — never leaking recipient addresses, secrets, or body content.
 - **Send-mode clamp.** `send`, `reply`, and `send_draft` requests are clamped down to the agent's `send_mode_ceiling` and never widened. Under a `draft-only` ceiling an autonomous request still produces only a draft.
 - **Attribution.** Mutating tool calls (`send`/`reply`/`send_draft`, `move_message`, `flag`, `tag`) and their send-policy/Governor audit rows are attributed to the acting agent id (audit-only; attribution never widens a decision). Filter the audit trail with `envelope actions tail --agent <name-or-id>`.
 - **Free tier / licensing.** Up to **2 active** (non-revoked) agents are free. Creating more requires an activated license (`envelope license activate`, using its hidden prompt or `--key-stdin`); over-limit `envelope agent create` returns the stable code `agent_limit_license_required`.
@@ -236,7 +246,7 @@ The `evidence` surface is read-only against source mailboxes (IMAP `EXAMINE` + `
 After intentional contract changes:
 
 ```bash
-cargo run -q -p envelope-email -- contract > docs/schemas/envelope.agent_contract.v1.json
-python3 -m json.tool docs/schemas/envelope.agent_contract.v1.json >/dev/null
-cargo test -p envelope-email contract -- --nocapture
+cargo run -q -p envelope-email -- contract > docs/schemas/envelope.agent_contract.v3.json
+python3 -m json.tool docs/schemas/envelope.agent_contract.v3.json >/dev/null
+cargo test -p envelope-email --test contract_drift
 ```

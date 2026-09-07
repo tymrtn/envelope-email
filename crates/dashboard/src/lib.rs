@@ -538,7 +538,34 @@ pub fn dashboard_router(state: AppState) -> Router {
         .route("/accounts/{account}/rules", get(legacy_rules_redirect))
         .nest("/api", api)
         .fallback(spa_fallback)
+        // Apply at the outer router so SPA shell/fallback, embedded static assets,
+        // API JSON, redirects, and errors cannot be framed by another origin.
+        .layer(axum::middleware::from_fn(anti_clickjacking))
         .with_state(state)
+}
+
+/// Reject framing at every dashboard boundary. `frame-ancestors` protects modern
+/// browsers; X-Frame-Options covers older clients. This middleware deliberately
+/// does not inspect or echo request headers, so bearer/query credentials cannot
+/// leak through a security response. `no-referrer` also prevents a browser from
+/// carrying an EventSource `?access_token=` URL into a subsequent request.
+async fn anti_clickjacking(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'none'"),
+    );
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    response
 }
 
 // ── Background unsnooze sweep ────────────────────────────────────────
@@ -1832,7 +1859,7 @@ async fn run_governor_gate(
         require_declaration,
     );
 
-    let config = GovernorConfig::from_env();
+    let config = GovernorConfig::smtp_required();
     let outcome = gate_with_attribution(&config, &req);
 
     // Record a sanitized audit event (no bodies, no full addresses, no bytes).
@@ -4479,6 +4506,60 @@ mod tests {
 
         let (ok2, _) = get_api(&app, "/api/accounts", &[("x-envelope-token", "t0ken")]).await;
         assert_eq!(ok2, StatusCode::OK, "fallback header → 200");
+    }
+
+    #[tokio::test]
+    async fn query_bearer_is_limited_to_get_sse_and_never_echoed() {
+        let (state, _, _) = test_state();
+        let app =
+            dashboard_router(state.with_auth(AuthConfig::from_parts(Some("t0ken".into()), [])));
+
+        let (status, body) = get_api(&app, "/api/accounts?access_token=t0ken", &[]).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(!String::from_utf8_lossy(&body).contains("t0ken"));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/events/stream?access_token=t0ken")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "SSE compatibility path remains available"
+        );
+        assert!(!response.headers().contains_key(header::LOCATION));
+        assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    #[tokio::test]
+    async fn anti_clickjacking_headers_cover_spa_api_and_static_fallback() {
+        let (state, _, _) = test_state();
+        let app = dashboard_router(state);
+        for uri in ["/", "/api/health", "/_app/nonexistent-static-asset.js"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.headers()[header::X_FRAME_OPTIONS], "DENY", "{uri}");
+            assert_eq!(
+                response.headers()[header::CONTENT_SECURITY_POLICY],
+                "frame-ancestors 'none'",
+                "{uri}"
+            );
+            assert_eq!(
+                response.headers()[header::REFERRER_POLICY],
+                "no-referrer",
+                "{uri}"
+            );
+        }
     }
 
     #[tokio::test]

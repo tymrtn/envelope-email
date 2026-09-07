@@ -23,23 +23,29 @@ fn default_folder() -> String {
     "INBOX".to_string()
 }
 
-pub(crate) fn is_image_media_type(content_type: &str) -> bool {
-    content_type
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with("image/")
+pub(crate) fn is_safe_inline_raster(content_type: &str, bytes: &[u8]) -> bool {
+    match envelope_email_transport::ingress::normalize_content_type(content_type).as_str() {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        _ => false,
+    }
 }
 
-pub(crate) fn attachment_disposition(filename: &str, inline: bool, content_type: &str) -> String {
-    let disposition = if inline && is_image_media_type(content_type) {
+pub(crate) fn attachment_disposition(
+    filename: &str,
+    inline: bool,
+    content_type: &str,
+    bytes: &[u8],
+) -> String {
+    let disposition = if inline && is_safe_inline_raster(content_type, bytes) {
         "inline"
     } else {
         "attachment"
     };
-    format!("{disposition}; filename=\"{}\"", filename.replace('"', "_"))
+    let safe_filename = envelope_email_transport::ingress::normalize_attachment_filename(filename);
+    format!("{disposition}; filename=\"{safe_filename}\"")
 }
 
 pub async fn download(
@@ -64,15 +70,17 @@ pub async fn download(
     .await
     {
         Ok((fname, data)) => {
-            let content_type = mime_guess::from_path(&fname)
+            let guessed_content_type = mime_guess::from_path(&fname)
                 .first_or_octet_stream()
                 .to_string();
+            let content_type =
+                envelope_email_transport::ingress::normalize_content_type(&guessed_content_type);
             Response::builder()
                 .header(header::CONTENT_TYPE, content_type.clone())
                 .header("X-Content-Type-Options", "nosniff")
                 .header(
                     header::CONTENT_DISPOSITION,
-                    attachment_disposition(&fname, q.inline, &content_type),
+                    attachment_disposition(&fname, q.inline, &content_type, &data),
                 )
                 .body(Body::from(data))
                 .unwrap()
@@ -89,21 +97,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn content_disposition_defaults_to_download_and_only_supports_inline_images() {
+    fn content_disposition_only_inlines_validated_raster_bytes() {
         assert_eq!(
-            attachment_disposition("report.pdf", false, "application/pdf"),
+            attachment_disposition("report.pdf", true, "application/pdf", b"%PDF"),
             "attachment; filename=\"report.pdf\""
         );
         assert_eq!(
-            attachment_disposition("report.pdf", true, "application/pdf"),
-            "attachment; filename=\"report.pdf\""
-        );
-        assert_eq!(
-            attachment_disposition("logo.png", true, "image/png"),
+            attachment_disposition("logo.png", true, "image/png", b"\x89PNG\r\n\x1a\nbody"),
             "inline; filename=\"logo.png\""
         );
         assert_eq!(
-            attachment_disposition("bad\"name.png", true, "image/png; charset=binary"),
+            attachment_disposition("vector.svg", true, "image/svg+xml", b"<svg></svg>"),
+            "attachment; filename=\"vector.svg\""
+        );
+        assert_eq!(
+            attachment_disposition("fake.png", true, "image/png", b"<svg></svg>"),
+            "attachment; filename=\"fake.png\""
+        );
+        assert_eq!(
+            attachment_disposition("../bad\"name.png", true, "image/png", b"\x89PNG\r\n\x1a\n"),
             "inline; filename=\"bad_name.png\""
         );
     }

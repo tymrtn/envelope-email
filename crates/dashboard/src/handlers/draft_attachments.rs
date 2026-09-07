@@ -308,22 +308,22 @@ pub async fn download(
         }
     };
 
-    // The stored content_type is client-supplied, so it decides only how the
-    // browser labels a download it was told to save. `nosniff` plus a
-    // disposition that is `inline` for images alone keeps a mislabelled entry
-    // from being rendered as active content on the dashboard's own origin.
-    let content_type = entry
+    // Stored content type is client-supplied. It is normalized before an HTTP
+    // header is built, and bytes must also validate as a strict raster format
+    // before an inline disposition is possible.
+    let claimed_content_type = entry
         .get("content_type")
         .and_then(serde_json::Value::as_str)
-        .filter(|ct| !ct.trim().is_empty())
         .unwrap_or("application/octet-stream");
+    let content_type =
+        envelope_email_transport::ingress::normalize_content_type(claimed_content_type);
 
     Response::builder()
-        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_TYPE, content_type.as_str())
         .header("X-Content-Type-Options", "nosniff")
         .header(
             header::CONTENT_DISPOSITION,
-            attachment_disposition(&filename, q.inline, content_type),
+            attachment_disposition(&filename, q.inline, &content_type, &data),
         )
         .body(Body::from(data))
         .unwrap()
@@ -737,10 +737,10 @@ mod tests {
         assert_eq!(body_bytes(response).await, b"# Case one");
     }
 
-    /// `inline` is honoured for images only — a mislabelled entry must not be
-    /// rendered as active content on the dashboard's own origin.
+    /// `inline` is honoured only for validated raster bytes; claimed SVG/HTML
+    /// types never render on the dashboard's own origin.
     #[tokio::test]
-    async fn download_only_inlines_images() {
+    async fn download_only_inlines_validated_rasters() {
         let (state, draft) = test_state();
         do_upload(
             &state,
@@ -748,7 +748,13 @@ mod tests {
             upload_request(
                 draft.revision,
                 &[
-                    ("shot.png", "image/png", b"\x89PNG"),
+                    ("shot.png", "image/png", b"\x89PNG\r\n\x1a\n"),
+                    ("vector.svg", "image/svg+xml", b"<svg></svg>"),
+                    (
+                        "bad-header.png",
+                        "image/png\r\nX-Injected: yes",
+                        b"\x89PNG\r\n\x1a\n",
+                    ),
                     ("page.html", "text/html", b"<script>"),
                 ],
             ),
@@ -764,6 +770,43 @@ mod tests {
         assert_eq!(
             png.headers().get(header::CONTENT_DISPOSITION).unwrap(),
             "inline; filename=\"shot.png\""
+        );
+
+        let vector = download(
+            State(state.clone()),
+            Path((
+                "acc1".to_string(),
+                draft.id.clone(),
+                "vector.svg".to_string(),
+            )),
+            Query(DownloadQuery { inline: true }),
+        )
+        .await;
+        assert_eq!(
+            vector.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"vector.svg\""
+        );
+
+        let malformed = download(
+            State(state.clone()),
+            Path((
+                "acc1".to_string(),
+                draft.id.clone(),
+                "bad-header.png".to_string(),
+            )),
+            Query(DownloadQuery { inline: true }),
+        )
+        .await;
+        assert_eq!(
+            malformed.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            malformed
+                .headers()
+                .get(header::CONTENT_DISPOSITION)
+                .unwrap(),
+            "attachment; filename=\"bad-header.png\""
         );
 
         let html = download(

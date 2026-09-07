@@ -31,6 +31,7 @@ pub mod license;
 pub mod messages;
 pub mod migrate;
 pub mod paths;
+pub mod provenance;
 pub mod quickstart;
 pub mod re_subject_guard;
 pub mod read;

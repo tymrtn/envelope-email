@@ -49,8 +49,10 @@ impl Database {
     /// Derive relationship facts for an outbound recipient set from this
     /// account's actual contact rows and cached correspondence headers.
     ///
-    /// `known_contact` is true only when every recipient is present in contacts
-    /// or observed in correspondence. `cold_email` is true only when every
+    /// `known_contact` is true only when every recipient is curated or observed
+    /// in outbound correspondence. Inbound-only mail, unverified header links,
+    /// and display names never establish a favorable relationship fact.
+    /// `cold_email` is true only when every
     /// recipient has no contact/history evidence *and* every bounded history scan
     /// completed. Mixed sets resolve both facts false; this prevents contradictory
     /// relationship labels. `unknown_domain` follows the same complete-scan rule.
@@ -121,7 +123,7 @@ impl Database {
             .conn()
             .query_row(
                 "SELECT 1 FROM contacts
-                 WHERE account_id = ?1 AND lower(email) = ?2
+                 WHERE account_id = ?1 AND lower(email) = ?2 AND COALESCE(history_derived, 0) = 0
                  LIMIT 1",
                 params![account_id, recipient],
                 |_| Ok(()),
@@ -141,7 +143,7 @@ impl Database {
             "SELECT tm.from_address, tm.to_addresses, tm.cc_addresses, tm.bcc_addresses, tm.date
              FROM thread_messages tm
              JOIN threads t ON t.thread_id = tm.thread_id
-             WHERE t.account_id = ?1
+             WHERE t.account_id = ?1 AND tm.is_outbound = 1
              ORDER BY tm.id DESC
              LIMIT ?2",
         )?;
@@ -280,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn contact_or_current_correspondence_is_known_host_history() {
+    fn curated_contact_or_outbound_correspondence_is_known_host_history() {
         let db = db_with_account();
         db.upsert_contact(&Contact {
             id: "contact".into(),
@@ -309,6 +311,22 @@ mod tests {
         assert_eq!(correspondence.known_contact, Some(true));
         assert_eq!(correspondence.cold_email, Some(false));
         assert_eq!(correspondence.unknown_domain, Some(false));
+    }
+
+    #[test]
+    fn inbound_only_correspondence_does_not_create_favorable_fact() {
+        let db = db_with_account();
+        add_thread_message(
+            &db,
+            "inbound-only@example.net",
+            false,
+            "2026-09-01T00:00:00Z",
+        );
+        let facts = db
+            .derive_outbound_relationship_facts("acc", "inbound-only@example.net", None, None)
+            .unwrap();
+        assert_ne!(facts.known_contact, Some(true));
+        assert_ne!(facts.frequent_contact, Some(true));
     }
 
     #[test]
@@ -343,7 +361,7 @@ mod tests {
                 None,
                 "2026-09-01T00:00:00Z",
                 "subject",
-                false,
+                true,
                 None,
             )
             .unwrap();

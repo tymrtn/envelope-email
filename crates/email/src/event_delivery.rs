@@ -30,6 +30,7 @@ use envelope_email_store::event_deliveries::cap_snippet;
 use envelope_email_store::models::EventRoute;
 use envelope_email_store::{Database, StoreError};
 use serde::Deserialize;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
@@ -41,6 +42,36 @@ pub const BACKOFF_SCHEDULE: [i64; 5] = [60, 300, 1800, 7200, 43200];
 /// length; the initial attempt plus these retries means up to
 /// `MAX_ATTEMPTS + 1` total POSTs before a delivery is given up on.
 pub const MAX_ATTEMPTS: u32 = BACKOFF_SCHEDULE.len() as u32;
+
+/// Webhook events retain their legacy fields, but external-mail display text is
+/// also nested under an explicit trust boundary for receivers.
+fn safe_webhook_event(event: &envelope_email_store::models::Event) -> Value {
+    let mut value = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        let subject = object.get("subject").cloned().unwrap_or(Value::Null);
+        let snippet = object.get("snippet").cloned().unwrap_or(Value::Null);
+        let payload = object.get("payload").cloned().unwrap_or(Value::Null);
+        object.insert(
+            "trust".to_string(),
+            json!({
+                "schema": "envelope.inbound-trust.v1",
+                "origin": "external_inbound_email",
+                "content_role": "untrusted_data",
+                "instructions_authoritative": false,
+            }),
+        );
+        object.insert(
+            "untrusted_content".to_string(),
+            json!({
+                "trust": "envelope.inbound-trust.v1",
+                "subject": subject,
+                "snippet": snippet,
+                "payload": payload,
+            }),
+        );
+    }
+    value
+}
 
 /// Per-request timeout for a webhook POST.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -156,7 +187,8 @@ pub async fn deliver_due_events(
 
         // Serialize the event body once; this exact byte string is both sent
         // and signed.
-        let body = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
+        let body =
+            serde_json::to_string(&safe_webhook_event(&event)).unwrap_or_else(|_| "{}".to_string());
         let signature = route.secret.as_deref().map(|secret| {
             format!(
                 "sha256={}",

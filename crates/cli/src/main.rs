@@ -460,13 +460,15 @@ enum Commands {
 
     /// Poll for a verification/OTP code from a recent email
     Code {
-        /// Account ID or email
+        /// Account ID or email. Required with --json so unattended retrieval is
+        /// bound to the expected mailbox.
         #[arg(long)]
         account: Option<String>,
-        /// Filter by sender domain or address (substring match)
+        /// Exact sender address or full domain. With --json this is required;
+        /// fragments, display names, and wildcards are rejected.
         #[arg(long)]
         from: Option<String>,
-        /// Filter by subject (substring match)
+        /// Optional subject correlation filter (substring match)
         #[arg(long)]
         subject: Option<String>,
         /// Seconds to wait before timing out
@@ -2860,7 +2862,7 @@ mod tests {
         ));
 
         let contract = commands::contract::agent_contract();
-        assert_eq!(contract["schema"], "envelope.agent_contract.v2");
+        assert_eq!(contract["schema"], "envelope.agent_contract.v3");
         let surfaces = contract["surfaces"].as_array().expect("surfaces array");
         for required in [
             "inbox", "read", "search", "thread", "draft", "send", "watch", "otp", "rules",

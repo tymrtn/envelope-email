@@ -248,6 +248,9 @@ fn tool_call(home: &std::path::Path, name: &str, arguments: Value) -> (Value, bo
         .arg("mcp")
         .env("HOME", home)
         .env("ENVELOPE_HOME", home)
+        // Explicit test-only compatibility mode: production MCP requires an
+        // identity token.
+        .env("ENVELOPE_MCP_UNSAFE_ALLOW_ANONYMOUS", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

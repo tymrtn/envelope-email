@@ -35,6 +35,7 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::extract::State;
+use axum::http::{HeaderValue, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use tokio::sync::broadcast::error::RecvError;
@@ -73,9 +74,16 @@ pub async fn stream(State(state): State<AppState>) -> Response {
         }
     });
 
-    Sse::new(stream)
+    let mut response = Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(HEARTBEAT).text("keep-alive"))
-        .into_response()
+        .into_response();
+    // An EventSource bearer can only appear in this endpoint's query string.
+    // Do not let an intermediary retain that URL or stream response. The outer
+    // dashboard middleware also supplies Referrer-Policy: no-referrer.
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Serialize a [`DashboardEvent`] into an SSE [`Event`] with `event:` set to the

@@ -170,14 +170,33 @@ fn agent_token_enforces_policy_and_revocation_at_mcp_startup() {
     );
     assert!(configured.status.success(), "policy setup failed");
 
-    let (allowed, is_error) = mcp_tool_call(home, token, "accounts", json!({}));
-    assert!(!is_error, "allowed MCP tool must succeed: {allowed}");
-    assert!(
-        allowed.is_array(),
-        "accounts tool returns an array: {allowed}"
-    );
+    // Even an allowlisted aggregate action cannot enumerate every mailbox under
+    // an identity-bound session; it fails closed before dispatch.
+    let (aggregate, is_error) = mcp_tool_call(home, token, "accounts", json!({}));
+    assert!(is_error, "aggregate accounts must fail closed: {aggregate}");
+    assert_eq!(aggregate["code"], "agent_policy_account_required");
 
-    let (denied, is_error) = mcp_tool_call(home, token, "inbox", json!({ "account": "any" }));
+    // Public policy discovery remains available without mailbox access.
+    let (allowed, is_error) = mcp_tool_call(home, token, "governor_catalog", json!({}));
+    assert!(
+        !is_error,
+        "governor catalog must remain available: {allowed}"
+    );
+    assert!(allowed["attributes"].is_array());
+
+    // Seed one account so the handler boundary can resolve an authoritative
+    // account before exercising the policy action denial.
+    let db = envelope_email_store::Database::open(&home.join("envelope-email/envelope.db"))
+        .expect("open isolated test db");
+    db.conn()
+        .execute(
+            "INSERT INTO accounts (id, name, username, domain, smtp_host, smtp_port, imap_host, imap_port, encrypted_password) VALUES ('acct-policy', 'Test', 'policy@example.test', 'example.test', 'smtp.example.test', 587, 'imap.example.test', 993, 'x')",
+            [],
+        )
+        .expect("seed account");
+
+    let (denied, is_error) =
+        mcp_tool_call(home, token, "inbox", json!({ "account": "acct-policy" }));
     assert!(is_error, "disallowed MCP tool must be rejected: {denied}");
     assert_eq!(denied["code"], "agent_policy_denied_action");
 
@@ -314,8 +333,8 @@ fn contract_export_declares_agent_identity_block() {
     assert!(output.status.success());
     let contract: Value = serde_json::from_slice(&output.stdout).expect("contract JSON");
 
-    // Stays v1 (additive).
-    assert_eq!(contract["schema"], "envelope.agent_contract.v2");
+    // v3 documents the OTP JSON breaking change.
+    assert_eq!(contract["schema"], "envelope.agent_contract.v3");
 
     let block = &contract["agent_identity"];
     assert_eq!(block["env"], "ENVELOPE_AGENT_TOKEN");

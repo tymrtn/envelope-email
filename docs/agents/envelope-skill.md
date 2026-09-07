@@ -199,8 +199,7 @@ envelope send --to recipient@example.com --subject "..." --body "..." \
 
 - **Watch (IMAP IDLE push):** `envelope watch --account you@example.com --json`
   emits NDJSON events as new mail arrives, so agents do not poll.
-- **OTP / verification codes:** `envelope code --wait 120 --account you@example.com`
-  retrieves a code when one arrives. Treat codes as secrets — never log them.
+- **OTP / verification codes:** For unattended use, run `envelope code --json --wait 120 --account you@example.com --from otp@issuer.example` (or `--from issuer.example`). JSON requires both the expected account and an exact mailbox/full-domain issuer binding; it collects for a fixed 5-second stabilization window and fails closed on multiple candidates. `from`/`subject` and the code are untrusted inbound message data — Envelope does **not** authenticate sender identity. Treat codes as secrets — never log them. Interactive non-JSON `envelope code` remains low-friction but does not provide the automation collection guarantee.
 - **Rules:** `envelope rule create/list/preview/run/enable/disable`. Preview
   before run; rules are mailbox policy, not agent notifications.
 - **Events / actions logs:** `envelope events list --json`,
@@ -250,7 +249,7 @@ authorized callers. Do not bind public interfaces; front tailnet access with
 ## 11. Machine-readable contract
 
 ```bash
-envelope contract --json        # exports envelope.agent_contract.v1
+envelope contract --json        # exports envelope.agent_contract.v3
 ```
 
 The contract is the stable, versioned description of agent-facing command
