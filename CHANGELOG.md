@@ -5,6 +5,39 @@ All notable changes to Envelope Email are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] — 2026-09-08
+
+### Fixed
+
+- **Dashboard (reader):** the message pane would not scroll. To measure true
+  content height the sizer set the message iframe to `0px` before reading it —
+  and the iframe lives inside the reader's scroll container, so every collapse
+  shrank that container and the browser clamped `scrollTop` back to the top.
+  The sizer also disconnected and re-observed its `ResizeObserver` inside its
+  own callback, and `observe()` always delivers an initial callback, so it woke
+  itself forever: measured on a real newsletter, 362 height rewrites in three
+  seconds, which pinned the pane at the top permanently. Nothing below the fold
+  of any HTML message was reachable — including the attachment list and the
+  quick-reply box beneath it. The body is now wrapped in a `#env-content` block
+  whose height *is* the content height at any frame height, so nothing is ever
+  collapsed; the observer watches that wrapper; and a height is written only
+  when it actually changed, so a settled frame writes nothing and the observer
+  goes quiet. Same message after the fix: 0 rewrites, scroll position held.
+  The `resolveFrameHeight` helper is shared verbatim with the V2 lineage, which
+  found and fixed this independently, so the two do not diverge. The frame
+  height stays uncapped — a capped iframe turns the remainder into an inner
+  scroll surface and makes the end of a tall email unreachable.
+- **Dashboard (reader):** the HTML/plain-text choice is made per message
+  instead of being remembered for the whole session. Picking "Plain text" once
+  wrote a session-wide preference, so every message opened afterwards rendered
+  as plain text until the tab closed and the operator had to keep re-selecting.
+  A message now opens as HTML when it has an HTML body and as plain text when
+  it does not; the toggle overrides the message in front of you and is cleared
+  on the next one. An empty or whitespace-only part no longer counts as a body,
+  so a blank HTML part can no longer render an empty reader over a perfectly
+  good plain-text sibling, and the highlighted toggle button always reports
+  what is actually on screen.
+
 ## [1.2.0] — 2026-09-06
 
 ### Security and agent boundaries
