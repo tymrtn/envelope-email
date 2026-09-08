@@ -3,7 +3,8 @@
   //
   // Owned deliverables in one component:
   //   • Sandboxed HTML rendering via BodyFrame (srcdoc + sandbox=allow-same-origin)
-  //   • Text/HTML toggle (session-persistent, default HTML when present)
+  //   • Text/HTML format decided per message; the toggle is an override that
+  //     does not leak to the next message
   //   • Headers block with from/to/cc/date/subject; to+cc collapsed behind Details
   //   • Thread strip (ThreadStrip)
   //   • Attachment list (AttachmentList)
@@ -100,36 +101,38 @@
     return isSeen(message.flags);
   });
 
-  // ── View toggle (text / html) — session-persistent ───────────────────
+  // ── View format (text / html) — decided per message ──────────────────
+  //
+  // The reader picks the format itself: HTML when the message carries a usable
+  // HTML body, plain text otherwise. A session-wide preference used to drive
+  // this, so choosing "Plain text" on one message made every later message
+  // open as plain text until the tab closed, and the operator had to keep
+  // re-selecting. The toggle is now an override for the message in front of
+  // you, cleared on every load.
 
-  const TOGGLE_KEY = 'envelope_reader_body_format';
+  let formatOverride = $state<'html' | 'text' | null>(null);
 
-  function getSessionFormat(): 'html' | 'text' {
-    try {
-      return (sessionStorage.getItem(TOGGLE_KEY) as 'html' | 'text') || 'html';
-    } catch {
-      return 'html';
-    }
+  function selectFormat(f: 'html' | 'text') {
+    formatOverride = f;
   }
 
-  function setSessionFormat(f: 'html' | 'text') {
-    try {
-      sessionStorage.setItem(TOGGLE_KEY, f);
-    } catch {
-      // ignore
-    }
-    bodyFormat = f;
+  /** A body is usable only when it carries something to render. An empty or
+   *  whitespace-only part is present in the payload but blank on screen, and
+   *  picking it would render an empty reader over a perfectly good sibling. */
+  function hasBody(body: string | null | undefined): boolean {
+    return typeof body === 'string' && body.trim().length > 0;
   }
 
-  let bodyFormat = $state<'html' | 'text'>(getSessionFormat());
+  let hasHtmlBody = $derived(hasBody(message?.html_body));
+  let hasTextBody = $derived(hasBody(message?.text_body));
 
-  // Derived: what format actually renders (html only if html_body present).
+  // What actually renders: the override when the message can honour it,
+  // otherwise HTML if there is any, otherwise text.
   let effectiveFormat = $derived(() => {
     if (!message) return 'text';
-    if (bodyFormat === 'html' && message.html_body) return 'html';
-    if (message.text_body) return 'text';
-    if (message.html_body) return 'html';
-    return 'text';
+    if (formatOverride === 'html' && hasHtmlBody) return 'html';
+    if (formatOverride === 'text' && hasTextBody) return 'text';
+    return hasHtmlBody ? 'html' : 'text';
   });
 
   // ── Remote images ─────────────────────────────────────────────────────
@@ -182,6 +185,9 @@
     remoteImages = false;
     remoteBlockedCount = 0;
     draftFallback = null;
+    // Every message decides its own format; a choice made on the last one
+    // must not follow the operator here.
+    formatOverride = null;
 
     if (isDraftsFolder(f)) {
       await loadDraft(acct, u, f);
@@ -214,11 +220,6 @@
           .finally(() => {
             threadLoading = false;
           });
-      }
-
-      // Auto-select html if present, text otherwise (session default wins).
-      if (bodyFormat === 'html' && !message.html_body && message.text_body) {
-        // Session prefers html but only text available — render text quietly.
       }
     } catch (e) {
       const err = e as EnvelopeApiError;
@@ -819,28 +820,30 @@
 
       <!-- ── Body toggle + remote image notice ─────────────────────── -->
       <div class="msg-body-toolbar">
-        {#if message.html_body && message.text_body}
+        {#if hasHtmlBody && hasTextBody}
+          <!-- The active button reports what is on screen, not what was last
+               clicked, so the toolbar can never disagree with the body. -->
           <span class="body-toggle" role="group" aria-label="Body format">
             <button
               class="body-toggle-btn"
-              class:is-active={bodyFormat === 'html'}
+              class:is-active={effectiveFormat() === 'html'}
               type="button"
-              onclick={() => setSessionFormat('html')}
+              onclick={() => selectFormat('html')}
             >
               HTML
             </button>
             <button
               class="body-toggle-btn"
-              class:is-active={bodyFormat === 'text'}
+              class:is-active={effectiveFormat() === 'text'}
               type="button"
-              onclick={() => setSessionFormat('text')}
+              onclick={() => selectFormat('text')}
             >
               Plain text
             </button>
           </span>
-        {:else if message.html_body && !message.text_body}
+        {:else if hasHtmlBody}
           <span class="body-format-note">HTML only</span>
-        {:else if !message.html_body && message.text_body}
+        {:else if hasTextBody}
           <span class="body-format-note">Plain text only</span>
         {/if}
 
@@ -857,13 +860,13 @@
 
       <!-- ── Body ──────────────────────────────────────────────────── -->
       <div class="msg-body">
-        {#if effectiveFormat() === 'html' && message.html_body}
+        {#if effectiveFormat() === 'html' && hasHtmlBody}
           <BodyFrame
-            html={message.html_body}
+            html={message.html_body ?? ''}
             {remoteImages}
             {onRemoteBlocked}
           />
-        {:else if message.text_body}
+        {:else if hasTextBody}
           <pre class="msg-text">{message.text_body}</pre>
         {:else}
           <p class="msg-empty">This message has no readable body.</p>

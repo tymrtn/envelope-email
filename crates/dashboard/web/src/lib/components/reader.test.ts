@@ -130,6 +130,15 @@ describe('reader-api utils', () => {
 
 // ── BodyFrame ─────────────────────────────────────────────────────────
 
+/** jsdom lays nothing out, so hand the sizer the height a browser would
+ *  report for the `#env-content` wrapper it measures. */
+function stubContentHeight(doc: Document, height: number): void {
+  const wrapper = doc.getElementById('env-content');
+  if (!wrapper) throw new Error('stubContentHeight: fixture has no #env-content');
+  wrapper.getBoundingClientRect = () => ({ height, width: 600, top: 0, left: 0, right: 600,
+    bottom: height, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+}
+
 describe('BodyFrame', () => {
   it('renders an iframe with sandbox=allow-same-origin (no allow-scripts)', async () => {
     render(BodyFrame, { html: '<p>Hello</p>' });
@@ -208,11 +217,9 @@ describe('BodyFrame', () => {
     // jsdom does not lay out srcdoc, so provide the rendered measurement the
     // browser exposes after load. This is deliberately beyond the old cap.
     const renderedDocument = document.implementation.createHTMLDocument('Long message');
-    renderedDocument.body.innerHTML = `<table>${rows}</table><p>End of booking</p>`;
-    Object.defineProperty(renderedDocument.documentElement, 'scrollHeight', {
-      configurable: true,
-      value: 105_000
-    });
+    renderedDocument.body.innerHTML =
+      `<div id="env-content"><table>${rows}</table><p>End of booking</p></div>`;
+    stubContentHeight(renderedDocument, 105_000);
     Object.defineProperty(frame, 'contentDocument', {
       configurable: true,
       value: renderedDocument
@@ -221,6 +228,64 @@ describe('BodyFrame', () => {
     await fireEvent.load(frame);
     expect(frame.style.height).toBe('105016px');
 
+  });
+
+  it('never collapses the frame to measure, so the reader keeps its scroll position', async () => {
+    // The regression: the sizer set the frame to 0px to read the content
+    // height. The frame lives inside the reader's scroll container, so every
+    // collapse shrank that container, the browser clamped scrollTop, and the
+    // pane snapped to the top — on a real newsletter, ~120 times a second,
+    // which made the reader unscrollable outright.
+    render(BodyFrame, { html: '<p>Long message body</p>' });
+    const frame = await screen.findByTitle('Message body') as HTMLIFrameElement;
+
+    const renderedDocument = document.implementation.createHTMLDocument('Message');
+    renderedDocument.body.innerHTML = '<div id="env-content"><p>Long message body</p></div>';
+    stubContentHeight(renderedDocument, 4000);
+    Object.defineProperty(frame, 'contentDocument', {
+      configurable: true,
+      value: renderedDocument
+    });
+
+    const written: string[] = [];
+    const observed = new MutationObserver(() => written.push(frame.style.height));
+    observed.observe(frame, { attributes: true, attributeFilter: ['style'] });
+
+    await fireEvent.load(frame);
+    await waitFor(() => expect(frame.style.height).toBe('4016px'));
+    observed.disconnect();
+
+    expect(written).not.toContain('0px');
+  });
+
+  it('writes nothing on a re-fit that measures the same content, so the observer settles', async () => {
+    // Loop termination. The old sizer disconnected and re-observed inside its
+    // own callback; observe() always delivers an initial callback, so it woke
+    // itself forever and rewrote the height on every pass.
+    render(BodyFrame, { html: '<p>Steady</p>' });
+    const frame = await screen.findByTitle('Message body') as HTMLIFrameElement;
+
+    const renderedDocument = document.implementation.createHTMLDocument('Message');
+    renderedDocument.body.innerHTML = '<div id="env-content"><p>Steady</p></div>';
+    stubContentHeight(renderedDocument, 2013);
+    Object.defineProperty(frame, 'contentDocument', {
+      configurable: true,
+      value: renderedDocument
+    });
+
+    await fireEvent.load(frame);
+    await waitFor(() => expect(frame.style.height).toBe('2029px'));
+
+    // A settled frame re-measured: the height it holds is the height it wants,
+    // so nothing is written and nothing wakes the observer again.
+    const written: string[] = [];
+    const observed = new MutationObserver(() => written.push(frame.style.height));
+    observed.observe(frame, { attributes: true, attributeFilter: ['style'] });
+    await fireEvent.load(frame);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    observed.disconnect();
+
+    expect(written).toEqual([]);
   });
 
   it('cleans iframe document listeners on srcdoc replacement and teardown', async () => {
@@ -396,6 +461,57 @@ describe('ReaderPane', () => {
     await waitFor(() => expect(screen.getByText('Test subject')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /HTML/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Plain text/i })).toBeInTheDocument();
+  });
+
+  it('opens an HTML message as HTML without the operator choosing', async () => {
+    readerApiMock.fetchMessageDetail.mockResolvedValueOnce({
+      message: { ...BASE_MSG, html_body: '<p>HTML body</p>', text_body: 'Plain body' }
+    });
+    render(ReaderPane);
+    await waitFor(() => expect(screen.getByTitle('Message body')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /^HTML$/i }).className).toContain('is-active');
+    expect(screen.queryByText('Plain body')).not.toBeInTheDocument();
+  });
+
+  it('opens a text-only message as plain text, with no toggle to choose from', async () => {
+    readerApiMock.fetchMessageDetail.mockResolvedValueOnce({
+      message: { ...BASE_MSG, html_body: null, text_body: 'Plain body' }
+    });
+    render(ReaderPane);
+    await waitFor(() => expect(screen.getByText('Plain body')).toBeInTheDocument());
+    expect(screen.getByText('Plain text only')).toBeInTheDocument();
+    expect(screen.queryByTitle('Message body')).not.toBeInTheDocument();
+  });
+
+  it('ignores a blank HTML part and renders the text that is actually there', async () => {
+    // A present-but-empty part is not a body. Preferring it rendered an empty
+    // reader over a perfectly good sibling part.
+    readerApiMock.fetchMessageDetail.mockResolvedValueOnce({
+      message: { ...BASE_MSG, html_body: '   \r\n  ', text_body: 'Plain body' }
+    });
+    render(ReaderPane);
+    await waitFor(() => expect(screen.getByText('Plain body')).toBeInTheDocument());
+    expect(screen.queryByTitle('Message body')).not.toBeInTheDocument();
+    expect(screen.getByText('Plain text only')).toBeInTheDocument();
+  });
+
+  it('does not carry a Plain text choice over to the next message', async () => {
+    // The regression: the toggle wrote a session-wide preference, so picking
+    // Plain text once made every later message open as plain text until the
+    // tab closed, and the operator had to keep re-selecting HTML.
+    readerApiMock.fetchMessageDetail.mockResolvedValue({
+      message: { ...BASE_MSG, html_body: '<p>HTML body</p>', text_body: 'Plain body' }
+    });
+    render(ReaderPane);
+    await waitFor(() => expect(screen.getByTitle('Message body')).toBeInTheDocument());
+
+    await fireEvent.click(screen.getByRole('button', { name: /Plain text/i }));
+    await waitFor(() => expect(screen.getByText('Plain body')).toBeInTheDocument());
+
+    // Open the next message.
+    pageState.params = { account: 'acct-a', uid: '43', box: 'unified' };
+    await waitFor(() => expect(screen.getByTitle('Message body')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /^HTML$/i }).className).toContain('is-active');
   });
 
   it('auto-marks an unread message read on successful open (postFlags add \\Seen, exactly once)', async () => {

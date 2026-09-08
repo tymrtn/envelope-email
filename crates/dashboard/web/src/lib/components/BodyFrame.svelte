@@ -1,5 +1,6 @@
 <script lang="ts">
   import { installBodyFrameScrollBridge } from './body-frame-scroll';
+  import { resolveFrameHeight } from './bodyframe-size';
 
   // BodyFrame — renders an HTML email body inside a sandboxed <iframe srcdoc>.
   //
@@ -150,7 +151,11 @@
       `summary.env-quote-toggle{cursor:pointer;color:#1a6b4a;font-size:13px;` +
       `list-style:none;user-select:none;padding:2px 0;}` +
       `summary.env-quote-toggle::-webkit-details-marker{display:none;}` +
-      `</style></head><body>${body}</body></html>`;
+      `#env-content{display:block;}` +
+      // A block wrapper whose height IS the content height, measurable without
+      // collapsing the iframe. documentElement.scrollHeight is at least the
+      // viewport height, which is why the previous sizer had to collapse first.
+      `</style></head><body><div id="env-content">${body}</div></body></html>`;
 
     return { srcdoc, remoteBlocked };
   }
@@ -208,33 +213,37 @@
   /**
    * Measure the rendered document and size the frame to it.
    *
-   * The frame is collapsed before measuring. `documentElement.scrollHeight`
-   * cannot report less than the frame's own viewport, so measuring while the
-   * frame is already tall returns the frame's height rather than the content's
-   * — and with a ResizeObserver attached, feeding that back in makes the frame
-   * grow on every pass (a 2,164px email measured 3,369px and climbing). Zero
-   * height first, read, then set: the reading is always the content.
+   * Two rules, both load-bearing, both learned the hard way:
+   *
+   * 1. Never measure against a collapsed frame.
+   *    `documentElement.scrollHeight` is at least the frame's own viewport
+   *    height, so an earlier sizer set the frame to 0px to get a true reading
+   *    — and the frame lives inside the reader's scroll container, so every
+   *    collapse shrank that container, the browser clamped `scrollTop`, and
+   *    the pane snapped back to the top. Measuring the `#env-content` wrapper
+   *    gives the content height at any frame height, so nothing is collapsed.
+   *
+   * 2. Only write when the height actually changed. The observer watches the
+   *    content, so writing a height on every callback keeps waking it. A
+   *    settled frame writes nothing and the observer goes quiet.
+   *
+   * The height stays uncapped: a capped iframe turns the remainder into an
+   * inner scroll surface and makes the end of a tall email unreachable.
    */
   function fitToContent() {
     if (!frameEl) return;
     try {
-      const doc = frameEl.contentDocument;
-      if (!doc?.documentElement) return;
-      // Don't observe our own measurement.
-      resizeObserver?.disconnect();
-      frameEl.style.height = '0px';
-      const height = Math.max(
-        doc.documentElement.scrollHeight,
-        doc.documentElement.offsetHeight,
-        doc.body?.scrollHeight ?? 0,
-        doc.body?.offsetHeight ?? 0
+      const wrapper = frameEl.contentDocument?.getElementById('env-content');
+      if (!wrapper) return;
+      const next = resolveFrameHeight(
+        wrapper.getBoundingClientRect().height,
+        frameEl.getBoundingClientRect().height,
+        undefined,
+        Number.POSITIVE_INFINITY
       );
-      // Do not cap this height. A capped iframe turns the remainder into an
-      // inner scroll surface and makes the end of a tall email unreachable.
-      if (height > 0) frameEl.style.height = `${height + 16}px`;
-      if (doc.body && resizeObserver) resizeObserver.observe(doc.body);
+      if (next !== null) frameEl.style.height = `${next}px`;
     } catch {
-      // Cross-origin or not yet ready — leave the fallback height.
+      // Cross-origin or not yet ready — leave the current height.
     }
   }
 
@@ -257,12 +266,19 @@
 
     const listenerCleanups = [installBodyFrameScrollBridge(frameEl)];
 
-    // Create the observer before the first measurement so `fitToContent` can
-    // suspend it around its own writes.
-    if (doc.body && typeof ResizeObserver !== 'undefined' && !resizeObserver) {
-      resizeObserver = new ResizeObserver(fitToContent);
-    }
     fitToContent();
+
+    // Observe the content wrapper, not documentElement or body:
+    // documentElement's box tracks the iframe viewport, so observing it feeds
+    // every height we write straight back in as another callback. The observer
+    // is attached once and left alone — disconnecting and re-observing inside
+    // the callback made `observe()` deliver its guaranteed initial callback
+    // again, which is a loop that never settles.
+    const wrapper = doc.getElementById('env-content');
+    if (wrapper && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(fitToContent);
+      resizeObserver.observe(wrapper);
+    }
 
     // Late-arriving images and fonts.
     for (const img of Array.from(doc.images)) {
